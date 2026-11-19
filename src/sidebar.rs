@@ -19,10 +19,11 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::dialogs;
+use crate::dialogs::{self, label};
 use crate::dnd::{self, DropCheck, SidebarDrop, SidebarRow};
 use crate::ops::transfer::Kind;
 use crate::panel;
+use crate::report::{self, ErrorText, Problem};
 
 // --- The bookmarks file ---
 
@@ -163,6 +164,16 @@ fn bookmarks_file() -> gio::File {
 }
 
 // --- Drives ---
+
+/// What identifies a drive that is not mounted, for the details of an
+/// error: its device or UUID, else its name.
+fn volume_place(volume: &gio::Volume) -> String {
+    let identifier = |kind: &str| volume.identifier(kind).map(|id| format!("{kind} {id}"));
+    identifier("unix-device")
+        .or_else(|| identifier("uuid"))
+        .or_else(|| volume.activation_root().map(|root| report::location(&root)))
+        .unwrap_or_else(|| volume.name().to_string())
+}
 
 /// Where an entry leads.
 #[derive(Clone)]
@@ -530,7 +541,13 @@ impl Sidebar {
                 });
                 self.file_monitor.replace(Some(monitor));
             }
-            Err(error) => eprintln!("Could not watch the bookmarks file: {error}"),
+            Err(error) => {
+                report::record(
+                    &Problem::new(dialogs::FAVOURITES_NOT_WATCHED, dialogs::attempt::WATCH_FAVOURITES)
+                        .file(label::FILE, &self.file)
+                        .error(&error),
+                );
+            }
         }
     }
 
@@ -542,6 +559,10 @@ impl Sidebar {
             let Some(sidebar) = weak.upgrade() else {
                 return;
             };
+            let error = match &result {
+                Err(error) => ErrorText::from_error(error),
+                Ok(_) => ErrorText::plain(dialogs::NOT_TEXT),
+            };
             match lines_from_read(result) {
                 Some(lines) => {
                     sidebar.writable.set(true);
@@ -551,7 +572,12 @@ impl Sidebar {
                     }
                 }
                 None => {
-                    eprintln!("Could not read {}", file.parse_name());
+                    // Shown as a toast only when the favourites are changed.
+                    report::record(
+                        &Problem::new(dialogs::FAVOURITES_UNREADABLE, dialogs::attempt::READ_FAVOURITES)
+                            .file(label::FILE, &file)
+                            .error_text(error),
+                    );
                     sidebar.writable.set(false);
                 }
             }
@@ -798,7 +824,7 @@ impl Sidebar {
                         Err(error) if error.matches(gio::IOErrorEnum::NotMounted) => {
                             sidebar.mount_enclosing(folder, name)
                         }
-                        Err(error) => sidebar.failed(&name, "open", &error),
+                        Err(error) => sidebar.failed(&name, "open", &report::location(&folder), &error),
                     }
                 });
             }
@@ -819,6 +845,7 @@ impl Sidebar {
     fn mount_volume(self: &Rc<Self>, volume: gio::Volume, name: String) {
         let weak = Rc::downgrade(self);
         let mounted = volume.clone();
+        let place = volume_place(&volume);
         volume.mount(
             gio::MountMountFlags::NONE,
             Some(&self.mount_operation()),
@@ -833,7 +860,7 @@ impl Sidebar {
                             sidebar.open(mount.default_location());
                         }
                     }
-                    Err(error) => sidebar.failed(&name, "open", &error),
+                    Err(error) => sidebar.failed(&name, "open", &place, &error),
                 }
             },
         );
@@ -850,7 +877,9 @@ impl Sidebar {
                 if let Some(sidebar) = weak.upgrade() {
                     match result {
                         Ok(()) => sidebar.open(target),
-                        Err(error) => sidebar.failed(&name, "open", &error),
+                        Err(error) => {
+                            sidebar.failed(&name, "open", &report::location(&target), &error)
+                        }
                     }
                 }
             },
@@ -866,9 +895,13 @@ impl Sidebar {
             Eject::Unmount(_) => ("unmount", "unmounted"),
             _ => ("eject", "ejected"),
         };
+        let place = match &eject {
+            Eject::Unmount(mount) | Eject::Mount(mount) => report::location(&mount.root()),
+            Eject::Volume(volume) => volume_place(volume),
+        };
         let done = move |result: Result<(), glib::Error>| {
             if let (Err(error), Some(sidebar)) = (result, weak.upgrade()) {
-                sidebar.failed_with(&name, verb, participle, &error);
+                sidebar.failed_with(&name, verb, participle, &place, &error);
             }
         };
         let flags = gio::MountUnmountFlags::NONE;
@@ -887,16 +920,21 @@ impl Sidebar {
         }
     }
 
-    fn failed(&self, name: &str, verb: &str, error: &glib::Error) {
-        self.failed_with(name, verb, &format!("{verb}ed"), error);
+    fn failed(&self, name: &str, verb: &str, place: &str, error: &glib::Error) {
+        self.failed_with(name, verb, &format!("{verb}ed"), place, error);
     }
 
     /// A toast saying what went wrong (none if the user cancelled a
-    /// password question: GIO says "already handled" then).
-    fn failed_with(&self, name: &str, verb: &str, participle: &str, error: &glib::Error) {
+    /// password question: GIO says "already handled" then). `place` is
+    /// the address of the folder or drive, for the details.
+    fn failed_with(&self, name: &str, verb: &str, participle: &str, place: &str, error: &glib::Error) {
         if !error.matches(gio::IOErrorEnum::FailedHandled) {
             let names = [name.to_string()];
-            self.toast(&dialogs::failed(&names, verb, participle, &dialogs::reason(error)), None);
+            let summary = dialogs::failed(&names, verb, participle, &dialogs::reason(error));
+            let problem = Problem::new(&summary, &dialogs::attempt::sidebar(verb, name))
+                .fact(label::LOCATION, place)
+                .error(error);
+            report::show(&self.revealer, problem);
         }
     }
 
@@ -1031,7 +1069,13 @@ impl Sidebar {
                 .replace_contents_future(text.into_bytes(), None, false, gio::FileCreateFlags::NONE)
                 .await;
             if let (Err((_, error)), Some(sidebar)) = (result, weak.upgrade()) {
-                sidebar.toast(&dialogs::favourites_not_saved(&dialogs::reason(&error)), None);
+                let summary = dialogs::favourites_not_saved(&dialogs::reason(&error));
+                report::show(
+                    &sidebar.revealer,
+                    Problem::new(&summary, dialogs::attempt::SAVE_FAVOURITES)
+                        .file(label::FILE, &file)
+                        .error(&error),
+                );
                 // Back to what the file says.
                 sidebar.lines.replace(Vec::new());
                 sidebar.load_bookmarks();

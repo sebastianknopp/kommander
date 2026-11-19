@@ -13,19 +13,20 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::gio;
 
-use crate::dialogs;
+use crate::dialogs::{self, label};
+use crate::report::{self, Problem};
 
 /// The rows on show and the app each stands for.
 type Rows = Rc<RefCell<Vec<(gtk::ListBoxRow, gio::AppInfo)>>>;
 
 /// Shows the dialog for `file`, called `name`, of type `content_type`.
-/// `on_error` gets a message if the chosen app could not be started.
+/// `on_error` gets the problem if the chosen app could not be started.
 pub fn present(
     parent: &impl IsA<gtk::Widget>,
     file: &gio::File,
     name: &str,
     content_type: &str,
-    on_error: impl Fn(String) + 'static,
+    on_error: impl Fn(Problem) + 'static,
 ) {
     let default = gio::AppInfo::default_for_type(content_type, false);
     let mut recommended: Vec<gio::AppInfo> = default.iter().cloned().collect();
@@ -148,6 +149,7 @@ pub fn present(
         let dialog = dialog.downgrade();
         let name = name.to_string();
         let file = file.clone();
+        let content_type = content_type.to_string();
         Rc::new(move |row: &gtk::ListBoxRow| {
             let app = rows.borrow().iter().find(|(known, _)| known == row).map(|(_, app)| app.clone());
             let (Some(app), Some(dialog)) = (app, dialog.upgrade()) else {
@@ -155,9 +157,21 @@ pub fn present(
             };
             let context = dialog.display().app_launch_context();
             dialog.close();
-            if let Err(error) = app.launch_uris(&[crate::panel::uri_for_other_apps(&file).as_str()], Some(&context)) {
-                eprintln!("Could not open {name} with {}: {error}", app.display_name());
-                on_error(dialogs::could_not_open_with(&name, &app.display_name()));
+            let address = crate::panel::uri_for_other_apps(&file).to_string();
+            match app.launch_uris(&[address.as_str()], Some(&context)) {
+                Ok(()) => report::launched(&app, &address),
+                Err(error) => {
+                    let summary = dialogs::could_not_open_with(&name, &app.display_name());
+                    let attempted = dialogs::attempt::open_with(&app.display_name());
+                    on_error(
+                        Problem::new(&summary, &attempted)
+                            .file(label::FILE, &file)
+                            .fact(label::CONTENT_TYPE, &content_type)
+                            .program(&app)
+                            .fact(label::ADDRESS, &address)
+                            .error(&error),
+                    );
+                }
             }
         })
     };

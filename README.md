@@ -218,6 +218,25 @@ This removes exactly what `install.sh` put in place. Your settings stay.
 Settings are kept in `~/.config/kommander/settings.ini`. To start over with
 the defaults, close the app and delete that file.
 
+## If something goes wrong
+
+When something fails, a short message appears at the bottom of the window
+with a **Details** button. Details shows the whole story: what was being
+done, the files involved with their full addresses, the exact error the
+system gave, for files opened in another app which app and what it was
+handed, the version and the time. **Copy** puts all of it on the clipboard,
+ready to paste into a bug report or a chat.
+
+Every error is also written to the error log,
+`~/.local/state/kommander/kommander.log` (the `kommander` folder in your
+state folder, `$XDG_STATE_HOME`). It also notes which app each file was
+opened with, since problems inside that app never come back to Kommander.
+To see it, choose **Show Error Log** in the main menu: the newest entries
+are at the top, **Copy All** copies them, and **Show in Panel** takes the
+panel to the log file. Messages that come with an **Undo** button (such as
+"2 files moved to trash, 1 could not be") keep Undo; the details of what
+failed are in the error log. The log keeps itself small (about 256 KB).
+
 ## Not yet
 
 These are planned but not built yet:

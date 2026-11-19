@@ -15,6 +15,7 @@ mod panel;
 mod pathbar;
 mod preferences;
 mod preview;
+mod report;
 mod progress;
 mod settings;
 mod sidebar;
