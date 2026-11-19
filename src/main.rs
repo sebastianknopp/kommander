@@ -15,6 +15,7 @@ mod preview;
 mod progress;
 mod settings;
 mod sidebar;
+mod theme;
 mod window;
 
 use adw::prelude::*;
@@ -25,9 +26,11 @@ const APP_ID: &str = "io.github.sebastianknopp.Kommander";
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
-    app.connect_startup(|_| {
+    app.connect_startup(|app| {
         load_css();
         set_up_icon();
+        // Omarchy theme colours and the translucent window (theme.rs).
+        theme::start(app, &settings::Settings::load());
     });
     app.connect_activate(|app| match app.active_window() {
         Some(window) => window.present(),
