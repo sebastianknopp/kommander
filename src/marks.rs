@@ -34,6 +34,13 @@ impl Marks {
         self.uris.extend(uris);
     }
 
+    /// Unmarks all of `uris`.
+    pub fn unmark_all<'a>(&mut self, uris: impl IntoIterator<Item = &'a str>) {
+        for uri in uris {
+            self.uris.remove(uri);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.uris.clear();
     }
@@ -71,6 +78,8 @@ mod tests {
         marks.toggle("file:///a");
         marks.mark_all(["file:///a", "file:///b", "file:///c"].map(String::from));
         assert_eq!(marks.uris.len(), 3);
+        marks.unmark_all(["file:///a", "file:///c", "file:///x"]);
+        assert!(marks.contains("file:///b") && !marks.contains("file:///a"));
         marks.clear();
         assert!(marks.is_empty());
     }

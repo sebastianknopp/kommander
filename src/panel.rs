@@ -455,6 +455,14 @@ impl Panel {
         self.mark_all(false);
     }
 
+    /// Unmarks `files` (after an operation on them), leaving other marks.
+    pub fn unmark(&self, files: &[gio::File]) {
+        let uris: Vec<String> = files.iter().map(|file| file.uri().into()).collect();
+        self.marked.marks.borrow_mut().unmark_all(uris.iter().map(String::as_str));
+        self.marked.show_all();
+        self.update_status();
+    }
+
     /// Toggles the mark on the file at `position`.
     fn toggle_mark(&self, position: u32) {
         let Some(uri) = self.entry(position).and_then(|info| entry_uri(&info)) else {

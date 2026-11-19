@@ -177,6 +177,40 @@
   color: var(--warning-color);
 }
 
+/* The file operations list in the header bar's popover (GNOME Files),
+ * one row per copy or move, separated by thin lines. */
+.operations {
+  min-width: 320px;
+}
+
+.operations > .operation {
+  padding: 9px 6px;
+}
+
+.operations > .operation + .operation {
+  border-top: 1px solid var(--border-color);
+}
+
+/* The progress strip above the function-key bar while copies or moves run:
+ * one line of small dimmed text over a slim bar in the accent colour. Flat
+ * like the function keys, which it lines up with. (With two bars at the
+ * bottom, libadwaita adds 3px above and below them, hence the small top
+ * margin.) */
+.operations-strip {
+  margin: 1px 6px 0 6px;
+  padding: 4px 12px 5px 12px;
+  min-height: 0;
+  font-weight: normal;
+}
+
+/* The theme's own progress bar (accent fill on a faint track), only
+ * slimmer. (libadwaita's "osd" bar has no track, and its 2px fill did not
+ * show in the off-screen test renderer.) */
+.operations-strip progressbar.horizontal > trough,
+.operations-strip progressbar.horizontal > trough > progress {
+  min-height: 4px;
+}
+
 /* About dialog: the Superstau quote that replaces the three cars. */
 .superstau-quote {
   font-style: italic;

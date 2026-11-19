@@ -3,12 +3,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::jobs::{self, JobId, Jobs};
+use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary};
 use crate::panel::{Panel, entry_file};
+use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
 use crate::{dialogs, fkeybar, ops, preferences};
 
@@ -19,6 +25,18 @@ struct State {
     panels_box: gtk::Box,
     toasts: adw::ToastOverlay,
     settings: RefCell<Settings>,
+    /// Copy and move: the worker queue, the header bar button listing the
+    /// operations (with the progress strip above the function keys), and
+    /// what each operation needs to know when it ends.
+    jobs: Jobs,
+    operations: Operations,
+    transfers: RefCell<HashMap<JobId, Transfer>>,
+    /// The name clash question on screen, if any.
+    conflict: RefCell<Option<PendingConflict>>,
+    /// The window closes as soon as the cancelled operations have stopped.
+    quitting: Cell<bool>,
+    /// The question whether to stop and quit is on screen.
+    asking_quit: Cell<bool>,
 }
 
 impl State {
@@ -85,20 +103,38 @@ pub fn build(app: &adw::Application) {
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&panels_box));
 
-    let state = Rc::new(State {
-        panels,
-        active: Cell::new(0),
-        panels_box: panels_box.clone(),
-        toasts: toast_overlay.clone(),
-        settings: RefCell::new(settings),
+    let state = Rc::new_cyclic(|state_weak: &std::rc::Weak<State>| {
+        let on_event = state_weak.clone();
+        let on_cancel = state_weak.clone();
+        State {
+            panels,
+            active: Cell::new(0),
+            panels_box: panels_box.clone(),
+            toasts: toast_overlay.clone(),
+            settings: RefCell::new(settings),
+            jobs: Jobs::new(move |event| {
+                if let Some(state) = on_event.upgrade() {
+                    state.on_job_event(event);
+                }
+            }),
+            operations: Operations::new(move |id| {
+                if let Some(state) = on_cancel.upgrade() {
+                    state.cancel_transfer(id);
+                }
+            }),
+            transfers: RefCell::default(),
+            conflict: RefCell::default(),
+            quitting: Cell::new(false),
+            asking_quit: Cell::new(false),
+        }
     });
     for panel in &state.panels {
         panels_box.append(panel.widget());
     }
     state.apply_icon_size(state.settings.borrow().icon_size);
 
-    // Header bar like GNOME Files: centred title, primary menu on the right.
-    // (A progress button for file operations will later be packed next to it.)
+    // Header bar like GNOME Files: centred title, primary menu on the right,
+    // and left of it the file operations button while copies or moves run.
     let menu = gio::Menu::new();
     let view_section = gio::Menu::new();
     view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
@@ -119,6 +155,7 @@ pub fn build(app: &adw::Application) {
         .title_widget(&adw::WindowTitle::new("Kommander", ""))
         .build();
     header.pack_end(&menu_button);
+    header.pack_end(state.operations.widget());
 
     let toolbar_view = adw::ToolbarView::builder()
         .top_bar_style(adw::ToolbarStyle::Raised)
@@ -126,6 +163,9 @@ pub fn build(app: &adw::Application) {
         .content(&toast_overlay)
         .build();
     toolbar_view.add_top_bar(&header);
+    // While copies or moves run, a slim progress strip directly above the
+    // function-key bar.
+    toolbar_view.add_bottom_bar(state.operations.strip());
     toolbar_view.add_bottom_bar(&fkeybar::build());
 
     let window = adw::ApplicationWindow::builder()
@@ -146,13 +186,39 @@ pub fn build(app: &adw::Application) {
         });
     }
 
-    // Both panels' folders are remembered when the window closes.
+    // Both panels' folders are remembered when the window closes. While
+    // copies or moves are running, it first asks whether to stop them.
     let state_weak = Rc::downgrade(&state);
     window.connect_close_request(move |_| {
-        if let Some(state) = state_weak.upgrade() {
-            state.save_settings();
+        let Some(state) = state_weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let running = state.transfers.borrow().len();
+        if running > 0 {
+            if !state.quitting.get() && !state.asking_quit.get() {
+                state.ask_quit(running);
+            }
+            return glib::Propagation::Stop;
         }
+        state.save_settings();
         glib::Propagation::Proceed
+    });
+
+    // Back to the panel when the operations list closes. Not right away:
+    // the button takes the focus back first (and may be hidden by then,
+    // which would leave the focus nowhere).
+    let state_weak = Rc::downgrade(&state);
+    state.operations.connect_closed(move || {
+        let state_weak = state_weak.clone();
+        glib::idle_add_local_once(move || {
+            // A dialog that opened meanwhile keeps the focus.
+            if let Some(state) = state_weak.upgrade()
+                && let Some(window) = state.panels_box.root().and_downcast::<adw::ApplicationWindow>()
+                && window.visible_dialog().is_none()
+            {
+                state.panels[state.active.get()].focus();
+            }
+        });
     });
 
     // Clicking into a panel makes it the active one.
@@ -177,16 +243,31 @@ pub fn build(app: &adw::Application) {
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let window_state = state.clone();
     let window_weak = window.downgrade();
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
-        // Dialogs live inside the window; leave their keys alone.
+    keys.connect_key_pressed(move |controller, key, _, modifiers| {
+        // Dialogs live inside the window; leave their keys alone. So do
+        // popovers (menus, the operations list): their keys pass through
+        // here too, but come from a surface of their own.
         let Some(window) = window_weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
         if window.visible_dialog().is_some() {
             return glib::Propagation::Proceed;
         }
+        if controller.current_event().and_then(|event| event.surface()) != window.surface() {
+            return glib::Propagation::Proceed;
+        }
         let active = window_state.active.get();
         let panel = &window_state.panels[active];
+
+        // Ctrl+J opens the list of running copies and moves (as browsers
+        // open their downloads).
+        if !panel.is_searching()
+            && modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+            && key.to_lower() == gdk::Key::j
+            && window_state.operations.popup()
+        {
+            return glib::Propagation::Stop;
+        }
 
         // Ctrl+A marks all files, Ctrl+Shift+A none. (Caught here because
         // the list would otherwise take Ctrl+A as its own "select all".)
@@ -240,6 +321,8 @@ pub fn build(app: &adw::Application) {
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let operation = match key {
             gdk::Key::F2 if !shift => Some("rename"),
+            gdk::Key::F5 if !shift => Some("copy"),
+            gdk::Key::F6 if !shift => Some("move"),
             gdk::Key::F7 if !shift => Some("mkdir"),
             gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete if shift => {
                 Some("delete-permanently")
@@ -378,7 +461,7 @@ fn add_window_actions(
     app.set_accels_for_action("win.terminal", &["<Shift>F4"]);
 }
 
-// --- File operations (F2, F7, F8/Delete, Shift+F8/Shift+Delete) ---
+// --- File operations (F2, F5, F6, F7, F8/Delete, Shift+F8/Shift+Delete) ---
 
 /// The file operation actions. They act on the active panel and do nothing
 /// while a dialog is open.
@@ -401,6 +484,8 @@ fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
             .build()
     };
     window.add_action_entries([
+        entry("copy", |state, panel| start_transfer(state, panel, Kind::Copy)),
+        entry("move", |state, panel| start_transfer(state, panel, Kind::Move)),
         entry("mkdir", new_folder),
         entry("rename", rename),
         entry("delete", move_to_trash),
@@ -649,6 +734,179 @@ fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File
     });
 }
 
+// --- Copy and move (F5, F6) ---
+
+/// What the window remembers about a running copy or move, for when it ends.
+struct Transfer {
+    kind: Kind,
+    /// The names of the files asked for, and of the destination folder.
+    names: Vec<String>,
+    dest_name: String,
+    /// The panel the files came from, and the folder it showed then.
+    panel: Rc<Panel>,
+    folder: Option<gio::File>,
+    sources: Vec<gio::File>,
+    /// The file the cursor was on, and where it goes if that one moves away.
+    cursor: Option<gio::File>,
+    neighbour: Option<PathBuf>,
+}
+
+/// The name clash question on screen: whose it is, and the line back to the
+/// waiting worker (taken once answered).
+struct PendingConflict {
+    id: JobId,
+    reply: Rc<RefCell<Option<mpsc::Sender<Answer>>>>,
+    dialog: adw::AlertDialog,
+}
+
+/// F5, F6: asks, then copies or moves the marked files (or the one under
+/// the cursor) into the other panel's folder.
+fn start_transfer(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind) {
+    let sources = panel.files_to_act_on();
+    if sources.is_empty() {
+        return;
+    }
+    let Some(dest_dir) = state.panels[1 - state.active.get()].folder() else {
+        return;
+    };
+    let names: Vec<String> = sources.iter().map(file_name).collect();
+    let dest_name = file_name(&dest_dir);
+    let location = dest_dir.parse_name();
+    let parent = state.panels_box.clone();
+    let state = state.clone();
+    let panel = panel.clone();
+    dialogs::confirm_transfer(&parent, kind, &names.clone(), &dest_name.clone(), &location, move || {
+        let request = Request { kind, sources: sources.clone(), dest_dir: dest_dir.clone() };
+        let id = state.jobs.submit(request);
+        let title = dialogs::transfer_title(kind, &names, &dest_name);
+        state.operations.add(id, &title);
+        let transfer = Transfer {
+            kind,
+            names: names.clone(),
+            dest_name: dest_name.clone(),
+            panel: panel.clone(),
+            folder: panel.folder(),
+            sources: sources.clone(),
+            cursor: panel.cursor_entry().and_then(|info| entry_file(&info)),
+            neighbour: panel.neighbour_after(&sources),
+        };
+        state.transfers.borrow_mut().insert(id, transfer);
+    });
+}
+
+impl State {
+    fn on_job_event(self: &Rc<Self>, event: jobs::Event) {
+        match event {
+            jobs::Event::Started(id) => self.operations.started(id),
+            jobs::Event::Progress(id, progress) => self.operations.update(id, &progress),
+            jobs::Event::Conflict(id, conflict, reply) => self.ask_conflict(id, &conflict, reply),
+            jobs::Event::Finished { id, summary, gone } => self.transfer_finished(id, &summary, &gone),
+        }
+    }
+
+    /// Shows the name clash question; the worker waits for the answer.
+    fn ask_conflict(self: &Rc<Self>, id: JobId, conflict: &Conflict, reply: mpsc::Sender<Answer>) {
+        // Cancelled while the question was on its way.
+        if self.jobs.is_cancelled(id) {
+            let _ = reply.send(Answer { resolution: Resolution::Cancel, apply_to_all: false });
+            return;
+        }
+        let Some(kind) = self.transfers.borrow().get(&id).map(|transfer| transfer.kind) else {
+            return;
+        };
+        // The folder it is in: inside a merge, not the top destination.
+        let dest = conflict
+            .existing
+            .file
+            .parent()
+            .map(|folder| file_name(&folder))
+            .unwrap_or_default();
+        let reply = Rc::new(RefCell::new(Some(reply)));
+        let reply_inner = reply.clone();
+        let state_weak = Rc::downgrade(self);
+        let dialog = dialogs::conflict(&self.panels_box, kind, conflict, &dest, move |answer| {
+            if let Some(reply) = reply_inner.take() {
+                let _ = reply.send(answer);
+            }
+            if let Some(state) = state_weak.upgrade() {
+                state.conflict.replace(None);
+            }
+        });
+        self.conflict.replace(Some(PendingConflict { id, reply, dialog }));
+    }
+
+    /// The cancel button of operation `id` in the operations list.
+    fn cancel_transfer(&self, id: JobId) {
+        self.jobs.cancel(id);
+        self.operations.cancelling(id);
+        // A question still open for it is answered with Cancel and closed.
+        let pending = self.conflict.borrow_mut().take_if(|pending| pending.id == id);
+        if let Some(pending) = pending {
+            if let Some(reply) = pending.reply.take() {
+                let _ = reply.send(Answer { resolution: Resolution::Cancel, apply_to_all: false });
+            }
+            pending.dialog.force_close();
+        }
+    }
+
+    fn transfer_finished(&self, id: JobId, summary: &Summary, gone: &[gio::File]) {
+        self.operations.remove(id);
+        let Some(transfer) = self.transfers.borrow_mut().remove(&id) else {
+            return;
+        };
+        self.toast(&dialogs::transferred(summary, &transfer.names, &transfer.dest_name));
+
+        // In the panel the files came from, the marks of the files that were
+        // acted on go (others marked meanwhile stay), and if the file under
+        // the cursor moved away, the cursor goes to its neighbour.
+        if !summary.done.is_empty() {
+            if_showing(&transfer.panel, &transfer.folder, |panel| {
+                panel.unmark(&transfer.sources);
+                if let (Some(cursor), Some(neighbour)) = (&transfer.cursor, transfer.neighbour)
+                    && gone.iter().any(|file| file.equal(cursor))
+                {
+                    panel.put_cursor_on(neighbour);
+                }
+            });
+        }
+
+        if self.quitting.get() && self.transfers.borrow().is_empty() {
+            self.close_window();
+        }
+    }
+
+    /// Closing the window while operations run: asks, and if told to stop
+    /// them, closes once the worker has stopped.
+    fn ask_quit(self: &Rc<Self>, running: usize) {
+        self.asking_quit.set(true);
+        let state_weak = Rc::downgrade(self);
+        dialogs::confirm_quit(&self.panels_box, running, move |quit| {
+            let Some(state) = state_weak.upgrade() else {
+                return;
+            };
+            state.asking_quit.set(false);
+            if !quit {
+                return;
+            }
+            state.quitting.set(true);
+            let ids: Vec<JobId> = state.transfers.borrow().keys().copied().collect();
+            for id in ids {
+                state.cancel_transfer(id);
+            }
+            // Everything may have ended while the question was open.
+            if state.transfers.borrow().is_empty() {
+                state.close_window();
+            }
+        });
+    }
+
+    fn close_window(&self) {
+        if let Some(window) = self.panels_box.root().and_downcast::<gtk::Window>() {
+            window.close();
+        }
+    }
+}
+
 const DEVELOPER: &str = "Sebastian Knopp";
 
 /// The line from the film "Superstau" that the app's name comes from.
@@ -755,10 +1013,13 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let files = adw::ShortcutsSection::new(Some("Files"));
     files.add(adw::ShortcutsItem::new("Rename the file under the cursor", "F2"));
     files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));
+    files.add(adw::ShortcutsItem::new("Copy to the other panel", "F5"));
+    files.add(adw::ShortcutsItem::new("Move to the other panel", "F6"));
     files.add(adw::ShortcutsItem::new("New folder", "F7"));
     files.add(adw::ShortcutsItem::new("Move to the trash", "F8 Delete"));
     files.add(adw::ShortcutsItem::new("Delete permanently", "<Shift>F8 <Shift>Delete"));
     files.add(adw::ShortcutsItem::new("Open a terminal here", "<Shift>F4"));
+    files.add(adw::ShortcutsItem::new("Show copy and move operations", "<Control>j"));
 
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new("Preferences", "<Control>comma"));

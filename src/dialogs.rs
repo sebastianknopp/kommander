@@ -1,5 +1,6 @@
 // The dialogs of the file operations (New Folder, Rename, Move to Trash,
-// Delete Permanently) and the wording of their messages.
+// Delete Permanently, Copy and Move with their name clash question) and the
+// wording of their messages.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Name checks, their messages and the preselected part of a name follow
@@ -11,6 +12,8 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
+
+use crate::ops::transfer::{Answer, Conflict, Kind, Progress, Resolution, Side, Summary};
 
 /// Longest file name most file systems allow, in bytes.
 const NAME_MAX: usize = 255;
@@ -180,6 +183,149 @@ pub fn delete_question(names: &[String], no_trash: bool) -> (String, String) {
             _ => format!("{} Files", names.len()),
         };
         (format!("Permanently Delete {what}?"), lost.into())
+    }
+}
+
+/// The words for copying or moving: "Copy", "copied", "Copying".
+fn transfer_words(kind: Kind) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        Kind::Copy => ("Copy", "copied", "Copying"),
+        Kind::Move => ("Move", "moved", "Moving"),
+    }
+}
+
+/// Heading of the Copy and Move dialogs: "Copy “a.txt”?", "Move 3 Files?".
+pub fn transfer_question(kind: Kind, names: &[String]) -> String {
+    let (verb, _, _) = transfer_words(kind);
+    match names {
+        [name] => format!("{verb} “{name}”?"),
+        _ => format!("{verb} {} Files?", names.len()),
+    }
+}
+
+/// Title of a running operation: "Copying 3 files to “Downloads”".
+pub fn transfer_title(kind: Kind, names: &[String], dest: &str) -> String {
+    let (_, _, doing) = transfer_words(kind);
+    format!("{doing} {} to “{dest}”", name_or_count(names))
+}
+
+/// What follows the title in the progress strip above the function-key bar:
+/// " — 45%", " — Preparing…" while the files are still being counted (no
+/// percentage), " — Cancelling…", plus " · 2 more waiting" when more
+/// operations are queued.
+pub fn transfer_status(percent: Option<u32>, cancelling: bool, waiting: usize) -> String {
+    let state = match percent {
+        _ if cancelling => "Cancelling…".to_string(),
+        Some(percent) => format!("{}%", percent.min(100)),
+        None => "Preparing…".to_string(),
+    };
+    if waiting == 0 {
+        format!(" — {state}")
+    } else {
+        format!(" — {state} · {waiting} more waiting")
+    }
+}
+
+/// The line under a running operation's progress bar:
+/// "12 of 40 files · 1.2 GB of 3.0 GB", only the sizes for a single file.
+pub fn transfer_detail(progress: &Progress) -> String {
+    if progress.scanning {
+        return "Preparing…".into();
+    }
+    let files = format!("{} of {} files", progress.files_done, progress.files_total);
+    if progress.bytes_total == 0 {
+        return files;
+    }
+    let bytes = format!(
+        "{} of {}",
+        glib::format_size(progress.bytes_done),
+        glib::format_size(progress.bytes_total)
+    );
+    if progress.files_total <= 1 { bytes } else { format!("{files} · {bytes}") }
+}
+
+/// The toast when an operation has ended. `names` are the names of the
+/// files asked for, `dest` the name of the destination folder.
+pub fn transferred(summary: &Summary, names: &[String], dest: &str) -> String {
+    let (verb, participle, _) = transfer_words(summary.kind);
+    if summary.cancelled {
+        return format!("{verb} cancelled");
+    }
+    if let Some(error) = &summary.stopped {
+        return format!("{verb} stopped: {}", reason(error));
+    }
+    let reason = summary.failed.first().map(|(_, error)| reason(error)).unwrap_or_default();
+    let (done, skipped, failed) =
+        (summary.done.len(), summary.skipped as usize, summary.incomplete as usize);
+    let total = done + skipped + failed;
+    match (done, skipped, failed) {
+        (_, 0, 0) => format!("{} {participle} to “{dest}”", name_or_count(names)),
+        (0, 0, _) => match names {
+            [name] => format!("Could not {} “{name}”: {reason}", verb.to_lowercase()),
+            _ => format!("{} could not be {participle}: {reason}", files(total)),
+        },
+        (0, _, 0) => match names {
+            [name] => format!("“{name}” skipped, nothing {participle}"),
+            _ => format!("{} skipped, nothing {participle}", files(total)),
+        },
+        (_, _, 0) => format!("{done} of {} {participle}, {skipped} skipped", files(total)),
+        (_, 0, _) => format!("{done} of {} {participle}, {failed} failed: {reason}", files(total)),
+        (_, _, _) => format!(
+            "{done} of {} {participle}, {skipped} skipped, {failed} failed: {reason}",
+            files(total)
+        ),
+    }
+}
+
+/// Heading and body of the question when something called `conflict.name`
+/// is already in the folder `dest`.
+pub fn conflict_text(conflict: &Conflict, dest: &str) -> (String, String) {
+    let name = &conflict.name;
+    let there = if conflict.existing.is_folder { "A folder" } else { "A file" };
+    if conflict.is_merge() {
+        return (
+            format!("Merge Folder “{name}”?"),
+            format!(
+                "A folder with this name is already in “{dest}”. Merging asks before \
+                 replacing any files in it."
+            ),
+        );
+    }
+    let consequence = if !conflict.can_replace && conflict.existing.is_folder {
+        "A folder can’t be replaced by a file."
+    } else if !conflict.can_replace {
+        "A file can’t be replaced by a folder."
+    } else {
+        "Replacing it will overwrite its content."
+    };
+    (
+        format!("“{name}” Already Exists"),
+        format!("{there} with this name is already in “{dest}”. {consequence}"),
+    )
+}
+
+/// What the conflict question tells about one side: "1.2 MB · 3 Nov 2025
+/// 14:05". Folders have no size worth showing.
+pub fn side_details(side: &Side) -> String {
+    let date = glib::DateTime::from_unix_local(side.modified as i64)
+        .ok()
+        .filter(|_| side.modified > 0)
+        .and_then(|date| date.format("%-e %b %Y %H:%M").ok())
+        .map(|date| format!("Modified {date}"));
+    match (side.is_folder, date) {
+        (true, Some(date)) => date,
+        (true, None) => "Modification date unknown".into(),
+        (false, Some(date)) => format!("{} · {date}", glib::format_size(side.size)),
+        (false, None) => glib::format_size(side.size).into(),
+    }
+}
+
+/// Body of the question when closing the window during operations.
+pub fn quit_question(running: usize) -> String {
+    if running == 1 {
+        "An operation is still running. Stop it and quit?".into()
+    } else {
+        format!("{running} operations are still running. Stop them and quit?")
     }
 }
 
@@ -396,6 +542,146 @@ pub fn confirm_delete(
     dialog.present(Some(parent));
 }
 
+/// Asks before copying or moving files into the folder called `dest` at
+/// `location` (a path, or a URI for remote places). Copy or Move is the
+/// default, so F5 then Enter is the quick way; Escape cancels.
+pub fn confirm_transfer(
+    parent: &impl IsA<gtk::Widget>,
+    kind: Kind,
+    names: &[String],
+    dest: &str,
+    location: &str,
+    on_confirm: impl Fn() + 'static,
+) {
+    let (verb, _, _) = transfer_words(kind);
+    // The whole location, shortened in the middle if it is long (the start
+    // and the folder's own name matter most); the tooltip has all of it.
+    let path = gtk::Label::builder()
+        .label(location)
+        .tooltip_text(location)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .css_classes(["caption", "dimmed"])
+        .build();
+    let dialog = adw::AlertDialog::builder()
+        .heading(transfer_question(kind, names))
+        .body(format!("Into “{dest}”"))
+        .extra_child(&path)
+        .close_response("cancel")
+        .default_response("go")
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("go", verb);
+    dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
+    dialog.connect_response(Some("go"), move |_, _| on_confirm());
+    dialog.present(Some(parent));
+}
+
+/// Asks what to do when something called `conflict.name` is already in the
+/// folder `dest`. Replace (Merge for two folders) is only offered where it
+/// is allowed and is never the default; Escape means Cancel, which stops the
+/// operation without touching anything. Returns the dialog, so that it can
+/// be closed if the operation is cancelled meanwhile.
+pub fn conflict(
+    parent: &impl IsA<gtk::Widget>,
+    kind: Kind,
+    conflict: &Conflict,
+    dest: &str,
+    on_answer: impl Fn(Answer) + 'static,
+) -> adw::AlertDialog {
+    let (heading, body) = conflict_text(conflict, dest);
+    let (_, participle, _) = transfer_words(kind);
+    let what = |side: &Side| if side.is_folder { "folder" } else { "file" };
+
+    // The two sides, so the user can see which is newer or larger.
+    let row = |title: String, side: &Side| {
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(side_details(side))
+            .use_markup(false)
+            .tooltip_text(side.file.parse_name())
+            .build();
+        row.add_css_class("property");
+        row
+    };
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    list.append(&row(format!("Existing {}", what(&conflict.existing)), &conflict.existing));
+    let source_title = format!("{} being {participle}", what(&conflict.source));
+    list.append(&row(capitalized(&source_title), &conflict.source));
+
+    let all = gtk::CheckButton::builder()
+        .label(if conflict.is_merge() {
+            "Apply this action to all folders"
+        } else {
+            "Apply this action to all files"
+        })
+        .visible(conflict.can_replace)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.append(&list);
+    content.append(&all);
+
+    let dialog = adw::AlertDialog::builder()
+        .heading(heading)
+        .body(body)
+        .extra_child(&content)
+        .prefer_wide_layout(true)
+        .close_response("cancel")
+        .default_response("skip")
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("skip", "Skip");
+    dialog.add_response("keep-both", "Keep Both");
+    if conflict.can_replace {
+        if conflict.is_merge() {
+            dialog.add_response("replace", "Merge");
+            dialog.set_response_appearance("replace", adw::ResponseAppearance::Suggested);
+        } else {
+            dialog.add_response("replace", "Replace");
+            dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+        }
+    }
+    dialog.connect_response(None, move |_, response| {
+        let resolution = match response {
+            "replace" => Resolution::Replace,
+            "skip" => Resolution::Skip,
+            "keep-both" => Resolution::KeepBoth,
+            _ => Resolution::Cancel,
+        };
+        on_answer(Answer { resolution, apply_to_all: all.is_active() });
+    });
+    dialog.present(Some(parent));
+    dialog
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+}
+
+/// Asks before closing the window while `running` operations are not done.
+/// Keep Running is the default and what Escape does. `on_answer` gets
+/// whether to stop and quit.
+pub fn confirm_quit(
+    parent: &impl IsA<gtk::Widget>,
+    running: usize,
+    on_answer: impl Fn(bool) + 'static,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Stop and Quit?")
+        .body(quit_question(running))
+        .close_response("keep")
+        .default_response("keep")
+        .build();
+    dialog.add_response("keep", "Keep Running");
+    dialog.add_response("quit", "Stop and Quit");
+    dialog.set_response_appearance("quit", adw::ResponseAppearance::Destructive);
+    dialog.connect_response(None, move |_, response| on_answer(response == "quit"));
+    dialog.present(Some(parent));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +772,144 @@ mod tests {
         let (heading, body) = delete_question(&three, true);
         assert_eq!(heading, "Delete Permanently?");
         assert!(body.starts_with("3 files can’t be moved to the trash"));
+    }
+
+    fn summary(kind: Kind, done: usize, skipped: u32, incomplete: u32) -> Summary {
+        let file = gtk::gio::File::for_path("/tmp/x");
+        let denied = glib::Error::new(
+            gtk::gio::IOErrorEnum::PermissionDenied,
+            "Error opening file /tmp/x: Permission denied",
+        );
+        Summary {
+            kind,
+            done: vec![file.clone(); done],
+            skipped,
+            incomplete,
+            failed: (0..incomplete).map(|_| (file.clone(), denied.clone())).collect(),
+            cancelled: false,
+            stopped: None,
+        }
+    }
+
+    #[test]
+    fn transfer_messages() {
+        let one = ["report.pdf".to_string()];
+        let three = ["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(transfer_question(Kind::Copy, &one), "Copy “report.pdf”?");
+        assert_eq!(transfer_question(Kind::Move, &three), "Move 3 Files?");
+        assert_eq!(
+            transfer_title(Kind::Copy, &three, "Downloads"),
+            "Copying 3 files to “Downloads”"
+        );
+        assert_eq!(
+            transfer_title(Kind::Move, &one, "Archive"),
+            "Moving “report.pdf” to “Archive”"
+        );
+
+        let toast = |s: &Summary, names: &[String]| transferred(s, names, "Downloads");
+        assert_eq!(
+            toast(&summary(Kind::Copy, 1, 0, 0), &one),
+            "“report.pdf” copied to “Downloads”"
+        );
+        assert_eq!(toast(&summary(Kind::Move, 3, 0, 0), &three), "3 files moved to “Downloads”");
+        assert_eq!(
+            toast(&summary(Kind::Copy, 2, 0, 1), &three),
+            "2 of 3 files copied, 1 failed: Permission denied"
+        );
+        assert_eq!(
+            toast(&summary(Kind::Copy, 0, 0, 1), &one),
+            "Could not copy “report.pdf”: Permission denied"
+        );
+        assert_eq!(
+            toast(&summary(Kind::Move, 0, 0, 3), &three),
+            "3 files could not be moved: Permission denied"
+        );
+        assert_eq!(
+            toast(&summary(Kind::Move, 0, 1, 0), &one),
+            "“report.pdf” skipped, nothing moved"
+        );
+        assert_eq!(toast(&summary(Kind::Copy, 0, 3, 0), &three), "3 files skipped, nothing copied");
+        assert_eq!(toast(&summary(Kind::Copy, 2, 1, 0), &three), "2 of 3 files copied, 1 skipped");
+        assert_eq!(
+            toast(&summary(Kind::Copy, 1, 1, 1), &three),
+            "1 of 3 files copied, 1 skipped, 1 failed: Permission denied"
+        );
+
+        let mut cancelled = summary(Kind::Copy, 1, 0, 0);
+        cancelled.cancelled = true;
+        assert_eq!(toast(&cancelled, &three), "Copy cancelled");
+        let mut stopped = summary(Kind::Move, 1, 0, 0);
+        stopped.stopped = Some(glib::Error::new(
+            gtk::gio::IOErrorEnum::NoSpace,
+            "Error writing to file: No space left on device",
+        ));
+        assert_eq!(toast(&stopped, &three), "Move stopped: No space left on device");
+    }
+
+    #[test]
+    fn transfer_progress_lines() {
+        let nbsp = |s: String| s.replace('\u{a0}', " ");
+        let mut progress = Progress { scanning: true, ..Progress::default() };
+        assert_eq!(transfer_detail(&progress), "Preparing…");
+        progress = Progress {
+            scanning: false,
+            files_done: 12,
+            files_total: 40,
+            bytes_done: 1_200_000_000,
+            bytes_total: 3_000_000_000,
+            current: "x".into(),
+        };
+        assert_eq!(nbsp(transfer_detail(&progress)), "12 of 40 files · 1.2 GB of 3.0 GB");
+        progress.files_total = 1;
+        progress.files_done = 0;
+        assert_eq!(nbsp(transfer_detail(&progress)), "1.2 GB of 3.0 GB");
+        progress.bytes_total = 0;
+        assert_eq!(transfer_detail(&progress), "0 of 1 files");
+    }
+
+    #[test]
+    fn transfer_strip_status() {
+        assert_eq!(transfer_status(None, false, 0), " — Preparing…");
+        assert_eq!(transfer_status(Some(45), false, 0), " — 45%");
+        assert_eq!(transfer_status(Some(140), false, 0), " — 100%");
+        assert_eq!(transfer_status(Some(45), false, 2), " — 45% · 2 more waiting");
+        assert_eq!(transfer_status(None, false, 1), " — Preparing… · 1 more waiting");
+        assert_eq!(transfer_status(Some(45), true, 0), " — Cancelling…");
+    }
+
+    #[test]
+    fn conflict_messages() {
+        let side = |is_folder, size| Side {
+            file: gtk::gio::File::for_path("/tmp/x"),
+            is_folder,
+            size,
+            modified: 0,
+        };
+        let clash = |source, existing| Conflict {
+            name: "x".into(),
+            source: side(source, 5),
+            existing: side(existing, 7),
+            can_replace: source == existing,
+        };
+        let (heading, body) = conflict_text(&clash(false, false), "Work");
+        assert_eq!(heading, "“x” Already Exists");
+        assert!(body.contains("“Work”") && body.contains("overwrite"));
+        let (heading, body) = conflict_text(&clash(true, true), "Work");
+        assert_eq!(heading, "Merge Folder “x”?");
+        assert!(body.starts_with("A folder with this name"));
+        let (_, body) = conflict_text(&clash(false, true), "Work");
+        assert!(body.ends_with("A folder can’t be replaced by a file."));
+        let (_, body) = conflict_text(&clash(true, false), "Work");
+        assert!(body.starts_with("A file with") && body.ends_with("replaced by a folder."));
+
+        assert_eq!(side_details(&side(false, 500)).replace('\u{a0}', " "), "500 bytes");
+        assert_eq!(side_details(&side(true, 4096)), "Modification date unknown");
+        let dated = Side { modified: 1_700_000_000, ..side(false, 500) };
+        assert!(side_details(&dated).contains(" · Modified "));
+        assert!(side_details(&dated).contains("2023"));
+
+        assert_eq!(quit_question(1), "An operation is still running. Stop it and quit?");
+        assert!(quit_question(2).starts_with("2 operations are"));
     }
 
     #[test]

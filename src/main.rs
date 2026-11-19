@@ -3,11 +3,13 @@
 
 mod dialogs;
 mod fkeybar;
+mod jobs;
 mod marks;
 mod ops;
 mod panel;
 mod pathbar;
 mod preferences;
+mod progress;
 mod settings;
 mod window;
 
