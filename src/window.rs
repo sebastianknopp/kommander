@@ -16,6 +16,7 @@ use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary}
 use crate::panel::{Panel, entry_file};
 use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
+use crate::preview::{self, Preview};
 use crate::{dialogs, fkeybar, ops, preferences};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
@@ -23,6 +24,12 @@ struct State {
     panels: [Rc<Panel>; 2],
     active: Cell<usize>,
     panels_box: gtk::Box,
+    /// The two halves of the window. Each holds its panel and, to show in
+    /// its place, a preview of the file under the other panel's cursor.
+    slots: [gtk::Stack; 2],
+    previews: [Rc<Preview>; 2],
+    /// The half the preview covers at the moment, if it is open.
+    previewing: Cell<Option<usize>>,
     toasts: adw::ToastOverlay,
     settings: RefCell<Settings>,
     /// Copy and move: the worker queue, the header bar button listing the
@@ -43,6 +50,10 @@ impl State {
     /// Makes panel `index` the active one. With `focus`, also moves the
     /// keyboard focus into it (not needed when it already got focus by a click).
     fn activate(&self, index: usize, focus: bool) {
+        // The preview is in the way of the panel that gets the cursor.
+        if self.previewing.get() == Some(index) {
+            self.close_preview();
+        }
         self.active.set(index);
         for (i, panel) in self.panels.iter().enumerate() {
             panel.set_active(i == index);
@@ -58,6 +69,52 @@ impl State {
             self.panels_box.add_css_class("small-icons");
         } else {
             self.panels_box.remove_css_class("small-icons");
+        }
+    }
+
+    /// The file under the active panel's cursor (None on "..").
+    fn cursor_file(&self) -> Option<gio::File> {
+        self.panels[self.active.get()].cursor_entry().as_ref().and_then(entry_file)
+    }
+
+    /// F3: shows the file under the cursor in place of the opposite panel,
+    /// or puts the panel back. With the "Window" setting, GNOME's previewer
+    /// window opens (or closes) instead.
+    fn toggle_preview(&self) {
+        if self.settings.borrow().preview_in_window {
+            if let Some(file) = self.cursor_file() {
+                preview::show_in_window(&file.uri(), true);
+            }
+        } else if self.previewing.get().is_some() {
+            self.close_preview();
+        } else {
+            let covered = 1 - self.active.get();
+            self.slots[covered].set_visible_child_name("preview");
+            self.previewing.set(Some(covered));
+            self.previews[covered].show(self.cursor_file());
+        }
+    }
+
+    /// Puts the covered panel back, exactly as it was.
+    fn close_preview(&self) {
+        let Some(covered) = self.previewing.take() else {
+            return;
+        };
+        self.previews[covered].stop();
+        self.slots[covered].set_visible_child_name("files");
+    }
+
+    /// The cursor of panel `index` moved: the preview follows.
+    fn cursor_moved(&self, index: usize) {
+        if index != self.active.get() {
+            return;
+        }
+        if let Some(covered) = self.previewing.get() {
+            self.previews[covered].show(self.cursor_file());
+        } else if self.settings.borrow().preview_in_window
+            && let Some(file) = self.cursor_file()
+        {
+            preview::follow_in_window(&file.uri());
         }
     }
 
@@ -100,6 +157,15 @@ pub fn build(app: &adw::Application) {
         .css_classes(["panels", "view"])
         .build();
 
+    let previews = [Preview::new(), Preview::new()];
+    let slots = [0, 1].map(|i: usize| {
+        let slot = gtk::Stack::builder().css_classes(["slot"]).build();
+        slot.add_named(panels[i].widget(), Some("files"));
+        slot.add_named(previews[i].widget(), Some("preview"));
+        panels_box.append(&slot);
+        slot
+    });
+
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&panels_box));
 
@@ -110,6 +176,9 @@ pub fn build(app: &adw::Application) {
             panels,
             active: Cell::new(0),
             panels_box: panels_box.clone(),
+            slots,
+            previews,
+            previewing: Cell::new(None),
             toasts: toast_overlay.clone(),
             settings: RefCell::new(settings),
             jobs: Jobs::new(move |event| {
@@ -128,10 +197,17 @@ pub fn build(app: &adw::Application) {
             asking_quit: Cell::new(false),
         }
     });
-    for panel in &state.panels {
-        panels_box.append(panel.widget());
-    }
     state.apply_icon_size(state.settings.borrow().icon_size);
+
+    // The preview follows the active panel's cursor.
+    for (index, panel) in state.panels.iter().enumerate() {
+        let state_weak = Rc::downgrade(&state);
+        panel.connect_cursor_changed(move || {
+            if let Some(state) = state_weak.upgrade() {
+                state.cursor_moved(index);
+            }
+        });
+    }
 
     // Header bar like GNOME Files: centred title, primary menu on the right,
     // and left of it the file operations button while copies or moves run.
@@ -271,6 +347,16 @@ pub fn build(app: &adw::Application) {
         let active = window_state.active.get();
         let panel = &window_state.panels[active];
 
+        // Ctrl+Space pauses or resumes the video or sound in the preview.
+        if !panel.is_searching()
+            && modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+            && matches!(key, gdk::Key::space | gdk::Key::KP_Space)
+            && let Some(covered) = window_state.previewing.get()
+            && window_state.previews[covered].toggle_playing()
+        {
+            return glib::Propagation::Stop;
+        }
+
         // Ctrl+J opens the list of running copies and moves (as browsers
         // open their downloads).
         if !panel.is_searching()
@@ -319,8 +405,14 @@ pub fn build(app: &adw::Application) {
             return glib::Propagation::Stop;
         }
 
+        // Tab goes to the other panel; if the preview covers it, the
+        // preview closes first.
         if is_tab {
             window_state.activate(1 - active, true);
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::Escape && window_state.previewing.get().is_some() {
+            window_state.close_preview();
             return glib::Propagation::Stop;
         }
         if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -333,6 +425,7 @@ pub fn build(app: &adw::Application) {
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let operation = match key {
             gdk::Key::F2 if !shift => Some("rename"),
+            gdk::Key::F3 if !shift => Some("view"),
             gdk::Key::F5 if !shift => Some("copy"),
             gdk::Key::F6 if !shift => Some("move"),
             gdk::Key::F7 if !shift => Some("mkdir"),
@@ -344,10 +437,6 @@ pub fn build(app: &adw::Application) {
         };
         if let Some(operation) = operation {
             let _ = WidgetExt::activate_action(&window, &format!("win.{operation}"), None);
-            return glib::Propagation::Stop;
-        }
-        if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
-            panel.open_parent();
             return glib::Propagation::Stop;
         }
         // Space and Insert mark the file under the cursor and move on.
@@ -387,15 +476,31 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
             let (Some(window), Some(state)) = (window_weak.upgrade(), state_weak.upgrade()) else {
                 return;
             };
-            let current = state.settings.borrow().icon_size;
-            let state_weak = Rc::downgrade(&state);
-            preferences::present(&window, current, move |size| {
-                if let Some(state) = state_weak.upgrade() {
-                    state.apply_icon_size(size);
-                    state.settings.borrow_mut().icon_size = size;
-                    state.settings.borrow().save();
-                }
-            });
+            let icon_size = state.settings.borrow().icon_size;
+            let preview_in_window = state.settings.borrow().preview_in_window;
+            let for_icons = Rc::downgrade(&state);
+            let for_preview = Rc::downgrade(&state);
+            preferences::present(
+                &window,
+                icon_size,
+                preview_in_window,
+                move |size| {
+                    if let Some(state) = for_icons.upgrade() {
+                        state.apply_icon_size(size);
+                        state.settings.borrow_mut().icon_size = size;
+                        state.settings.borrow().save();
+                    }
+                },
+                move |in_window| {
+                    if let Some(state) = for_preview.upgrade() {
+                        // Whichever preview is open belongs to the old setting.
+                        state.close_preview();
+                        preview::close_window();
+                        state.settings.borrow_mut().preview_in_window = in_window;
+                        state.settings.borrow().save();
+                    }
+                },
+            );
         })
         .build();
 
@@ -496,6 +601,7 @@ fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
             .build()
     };
     window.add_action_entries([
+        entry("view", |state, _| state.toggle_preview()),
         entry("copy", |state, panel| start_transfer(state, panel, Kind::Copy)),
         entry("move", |state, panel| start_transfer(state, panel, Kind::Move)),
         entry("mkdir", new_folder),
@@ -1059,6 +1165,9 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
 
     let files = adw::ShortcutsSection::new(Some("Files"));
     files.add(adw::ShortcutsItem::new("Rename the file under the cursor", "F2"));
+    files.add(adw::ShortcutsItem::new("Preview in the other panel", "F3"));
+    files.add(adw::ShortcutsItem::new("Close the preview", "F3 Escape"));
+    files.add(adw::ShortcutsItem::new("Pause or play the previewed video or sound", "<Control>space"));
     files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));
     files.add(adw::ShortcutsItem::new("Copy to the other panel", "F5"));
     files.add(adw::ShortcutsItem::new("Move to the other panel", "F6"));

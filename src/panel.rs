@@ -455,6 +455,11 @@ impl Panel {
         self.entry(self.selection.selected())
     }
 
+    /// Calls `f` whenever another entry comes under the cursor.
+    pub fn connect_cursor_changed(&self, f: impl Fn() + 'static) {
+        self.selection.connect_selected_item_notify(move |_| f());
+    }
+
     /// The names of all files in the folder, hidden ones included.
     pub fn names(&self) -> HashSet<String> {
         (0..self.dir_list.n_items())

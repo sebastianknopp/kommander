@@ -16,3 +16,5 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_10", "gtk_v4_24
 # already built as part of gio, so they add nothing new to compile.
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
+sourceview = { version = "0.11", package = "sourceview5" }
+poppler = { version = "0.26", package = "poppler-rs" }

@@ -4,7 +4,7 @@
  * The file list styling follows Nautilus's list view (GPL-3.0-or-later). */
 
 /* Thin line between the two panels. */
-.panels > .panel + .panel {
+.panels > .slot + .slot {
   border-left: 1px solid var(--border-color);
 }
 
@@ -244,4 +244,29 @@
 /* About dialog: the Superstau quote that replaces the three cars. */
 .superstau-quote {
   font-style: italic;
+}
+
+/* --- Preview pane (F3), shown in place of the opposite panel --- */
+
+/* The name strip matches a panel's path strip in height. */
+.preview .preview-title {
+  min-height: 28px;
+}
+
+.preview .preview-picture {
+  margin: 12px;
+}
+
+.preview .preview-text {
+  background: none;
+  font-size: 0.9em;
+}
+
+.preview .preview-pdf {
+  padding: 12px;
+}
+
+/* Pages are paper: a thin outline keeps them apart from a light background. */
+.preview .preview-pdf-page {
+  outline: 1px solid var(--border-color);
 }

@@ -81,6 +81,8 @@ pub struct Settings {
     pub sort: [Sort; 2],
     /// The folder (as a URI) each panel showed last; None means home.
     pub folders: [Option<String>; 2],
+    /// F3 opens GNOME's previewer window instead of the opposite panel.
+    pub preview_in_window: bool,
 }
 
 impl Settings {
@@ -130,6 +132,8 @@ impl Settings {
             show_hidden: boolean("show-hidden").unwrap_or(defaults.show_hidden),
             sort,
             folders,
+            preview_in_window: boolean("preview-in-window")
+                .unwrap_or(defaults.preview_in_window),
         }
     }
 
@@ -137,6 +141,7 @@ impl Settings {
         let file = glib::KeyFile::new();
         file.set_string(GROUP, "icon-size", self.icon_size.as_str());
         file.set_boolean(GROUP, "show-hidden", self.show_hidden);
+        file.set_boolean(GROUP, "preview-in-window", self.preview_in_window);
         for (i, panel) in PANEL_KEYS.iter().enumerate() {
             let sort = self.sort[i];
             file.set_string(GROUP, &format!("{panel}-sort"), sort.column.as_str());
@@ -173,6 +178,7 @@ mod tests {
                 },
             ],
             folders: [Some("file:///tmp/a%20b".into()), None],
+            preview_in_window: true,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();

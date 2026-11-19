@@ -10,6 +10,7 @@ mod ops;
 mod panel;
 mod pathbar;
 mod preferences;
+mod preview;
 mod progress;
 mod settings;
 mod window;
