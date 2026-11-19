@@ -1057,7 +1057,12 @@ impl Panel {
         );
         launcher.set_cwd(&path);
         launcher.setenv("PWD", &path, true);
-        if let Err(error) = launcher.spawn(&[OsStr::new("xdg-terminal-exec")]) {
+        // The folder is also given as an option: a terminal that keeps one
+        // process for all its windows (Ghostty on Omarchy) opens the new
+        // window from that process and never sees the folder we start in.
+        let mut dir = std::ffi::OsString::from("--dir=");
+        dir.push(&path);
+        if let Err(error) = launcher.spawn(&[OsStr::new("xdg-terminal-exec"), dir.as_os_str()]) {
             eprintln!("Could not start xdg-terminal-exec: {error}");
             toast(&self.root, "Could not open a terminal");
         }
