@@ -988,7 +988,14 @@ impl Panel {
 
     /// Opens a terminal in the current folder (Shift+F4).
     pub fn open_terminal(&self) {
-        let Some(path) = self.folder().and_then(|folder| folder.path()) else {
+        if let Some(folder) = self.folder() {
+            self.open_terminal_in(&folder);
+        }
+    }
+
+    /// Opens a terminal in `folder` (the right-click menu on a folder).
+    pub fn open_terminal_in(&self, folder: &gio::File) {
+        let Some(path) = folder.path() else {
             toast(&self.root, "Terminals can only be opened in local folders");
             return;
         };
@@ -1043,6 +1050,95 @@ impl Panel {
         let picked = self.column_view.pick(x, y, gtk::PickFlags::DEFAULT)?;
         let position = self.marked.position_of(&picked)?;
         Some((position, picked))
+    }
+
+    // --- Right-click menu and clipboard ---
+
+    /// Shows the files in `uris` as cut (dimmed), and no others.
+    pub fn set_cut(&self, uris: &HashSet<String>) {
+        self.marked.cut.replace(uris.clone());
+        self.marked.show_all();
+    }
+
+    /// Calls `f` when the file list is right-clicked, with what the menu
+    /// should act on. A right-clicked row gets the cursor (marks stay).
+    pub fn connect_context_menu(self: &Rc<Self>, f: impl Fn(MenuTarget) + 'static) {
+        let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            let row = panel.row_at(x, y).map(|(position, _)| position);
+            if let Some(position) = row {
+                select_row(&panel.column_view, position, false);
+            }
+            let point = panel
+                .column_view
+                .compute_point(&panel.root, &gtk::graphene::Point::new(x as f32, y as f32))
+                .unwrap_or_else(|| gtk::graphene::Point::new(x as f32, y as f32));
+            let at = gdk::Rectangle::new(point.x() as i32, point.y() as i32, 1, 1);
+            f(panel.menu_target(row, at));
+        });
+        self.column_view.add_controller(click);
+    }
+
+    /// What the menu opened from the keyboard (Menu key, Shift+F10) acts on:
+    /// the row under the cursor, the menu pointing just below it.
+    pub fn cursor_menu_target(&self) -> MenuTarget {
+        let position = self.selection.selected();
+        let row = (position != gtk::INVALID_LIST_POSITION).then_some(position);
+        let bounds = row
+            .and_then(|position| self.row_widget_at(position))
+            .and_then(|row| row.compute_bounds(&self.root));
+        let at = match bounds {
+            Some(bounds) => gdk::Rectangle::new(
+                bounds.x() as i32 + 36,
+                bounds.y() as i32,
+                1,
+                bounds.height() as i32,
+            ),
+            // No row to point at: the top of the list.
+            None => self
+                .column_view
+                .compute_bounds(&self.root)
+                .map_or(gdk::Rectangle::new(24, 24, 1, 1), |list| {
+                    gdk::Rectangle::new(list.x() as i32 + 36, list.y() as i32 + 24, 1, 1)
+                }),
+        };
+        self.menu_target(row, at)
+    }
+
+    /// The menu target for the row at `position` (None: empty space).
+    fn menu_target(&self, position: Option<u32>, at: gdk::Rectangle) -> MenuTarget {
+        // ".." and empty space act on the folder itself, not on files.
+        let entry = position.and_then(|position| self.entry(position));
+        let files = match (position, &entry) {
+            (Some(position), Some(_)) => self.files_to_drag(position),
+            _ => Vec::new(),
+        };
+        MenuTarget { entry, files, at }
+    }
+
+    /// The list row widget showing `position`, if it is on screen.
+    fn row_widget_at(&self, position: u32) -> Option<gtk::Widget> {
+        let cells = self.marked.cells.borrow();
+        cells
+            .iter()
+            .filter_map(|cell| cell.upgrade())
+            .find(|cell| cell.item().is_some() && cell.position() == position)
+            .and_then(|cell| cell.child())
+            .and_then(|child| row_widget(&child))
+    }
+
+    /// Opens the entry under the cursor, as Enter does.
+    pub fn open_cursor(self: &Rc<Self>) {
+        let position = self.selection.selected();
+        if position != gtk::INVALID_LIST_POSITION {
+            self.activate(position);
+        }
     }
 
     // --- Drag and drop ---
@@ -1309,6 +1405,18 @@ fn select_row(column_view: &gtk::ColumnView, position: u32, focus: bool) {
     }
 }
 
+/// What the right-click menu acts on.
+pub struct MenuTarget {
+    /// The file or folder row clicked (or under the cursor); None for
+    /// empty space and the ".." row.
+    pub entry: Option<gio::FileInfo>,
+    /// The files acted on: all marked files if that row is marked,
+    /// otherwise its own file; none for empty space and "..".
+    pub files: Vec<gio::File>,
+    /// Where the menu points, in the panel's coordinates.
+    pub at: gdk::Rectangle,
+}
+
 /// What a drop would do: put `files` into `dest` by copying or moving
 /// them, shown by highlighting `row` (or the whole list if None).
 struct DropPlan {
@@ -1490,24 +1598,29 @@ fn entry_uri(info: &gio::FileInfo) -> Option<String> {
 #[derive(Default)]
 struct MarkedCells {
     marks: RefCell<Marks>,
+    /// The URIs of files cut to the clipboard; their rows look dimmed
+    /// ("cut" CSS class), as in GNOME Files.
+    cut: RefCell<HashSet<String>>,
     cells: RefCell<Vec<glib::WeakRef<gtk::ColumnViewCell>>>,
 }
 
 impl MarkedCells {
-    /// Shows `cell` as marked or not.
+    /// Shows `cell` as marked or not, and as cut or not.
     fn show(&self, cell: &gtk::ColumnViewCell) {
         let Some(child) = cell.child() else {
             return;
         };
-        let marked = cell
-            .item()
-            .and_downcast::<gio::FileInfo>()
-            .and_then(|info| entry_uri(&info))
-            .is_some_and(|uri| self.marks.borrow().contains(&uri));
+        let uri = cell.item().and_downcast::<gio::FileInfo>().and_then(|info| entry_uri(&info));
+        let marked = uri.as_ref().is_some_and(|uri| self.marks.borrow().contains(uri));
         if marked {
             child.add_css_class("marked");
         } else {
             child.remove_css_class("marked");
+        }
+        if uri.is_some_and(|uri| self.cut.borrow().contains(&uri)) {
+            child.add_css_class("cut");
+        } else {
+            child.remove_css_class("cut");
         }
     }
 

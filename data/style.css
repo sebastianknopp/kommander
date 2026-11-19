@@ -179,6 +179,14 @@
   color: var(--warning-color);
 }
 
+/* Files cut to the clipboard (Ctrl+X) look faded until pasted, as in GNOME
+ * Files (which used to dim their icons; newer versions draw a dashed
+ * outline in place of the icon). The whole row fades, so it reads in any
+ * colour scheme. */
+.panel .file-cell.cut {
+  opacity: 0.45;
+}
+
 /* Drag and drop: where dropped files will land, a folder row or the whole
  * list, highlighted like libadwaita's own drop targets (tab overview).
  * The colour is taken on the panel, before the inactive panel's list

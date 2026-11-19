@@ -1,12 +1,15 @@
 // Kommander: a two-panel file manager for GNOME.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+mod clipboard;
 mod dialogs;
 mod dnd;
 mod fkeybar;
 mod jobs;
 mod listings;
 mod marks;
+mod menu;
+mod openwith;
 mod ops;
 mod panel;
 mod pathbar;

@@ -371,6 +371,27 @@ pub const INTO_ITSELF: &str = "A folder can’t be put inside itself";
 pub const TRASH_DROP_FROM_PANELS_ONLY: &str =
     "Only files shown in a panel can be dropped onto the trash";
 
+// --- Clipboard and Open With ---
+
+/// The toast when Ctrl+V or Paste finds no files on the clipboard (Nautilus's words).
+pub const NOTHING_TO_PASTE: &str = "There is nothing on the clipboard to paste";
+
+pub const OPEN_WITH_TITLE: &str = "Open With";
+pub const OPEN_WITH_DEFAULT: &str = "Default";
+pub const OPEN_WITH_OTHER_APPS: &str = "Other Apps";
+pub const OPEN_WITH_VIEW_ALL: &str = "View All Apps";
+pub const OPEN_WITH_NONE: &str = "No apps are known to open this type of file.";
+
+/// The line above the list of apps: "Choose an app to open “notes.txt”."
+pub fn open_with_intro(name: &str) -> String {
+    format!("Choose an app to open “{name}”.")
+}
+
+/// The toast when the app chosen in Open With could not be started.
+pub fn could_not_open_with(name: &str, app: &str) -> String {
+    format!("Could not open “{name}” with {app}")
+}
+
 // --- Dialogs ---
 
 /// Asks for the name of a new folder. `existing` are the names already in
@@ -978,5 +999,15 @@ mod tests {
     fn reasons_drop_the_path() {
         assert_eq!(reason_of("Error renaming file /tmp/a: Permission denied"), "Permission denied");
         assert_eq!(reason_of("No longer in the trash"), "No longer in the trash");
+    }
+
+    #[test]
+    fn open_with_wording() {
+        assert_eq!(open_with_intro("notes.txt"), "Choose an app to open “notes.txt”.");
+        assert_eq!(
+            could_not_open_with("photo.png", "Image Viewer"),
+            "Could not open “photo.png” with Image Viewer"
+        );
+        assert_eq!(NOTHING_TO_PASTE, "There is nothing on the clipboard to paste");
     }
 }
