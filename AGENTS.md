@@ -37,6 +37,8 @@ Arch packages: `rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib`
 - Run: `cargo run` — opens on the real desktop; see "Testing the UI" below
   before doing that while the owner is working.
 - Test: `cargo test` (unit tests, no display needed)
+- Timing: with `KOMMANDER_TIMING=1` set, the app prints to stderr how long
+  each trip to a folder took (from the key press to the list shown).
 - Lint: `cargo clippy --all-targets` — keep it free of warnings.
 - Install for the current user: `./install.sh` (to `~/.local`; `PREFIX=/dir`
   or `XDG_DATA_HOME` redirect it), remove with `./uninstall.sh` (same
@@ -57,6 +59,12 @@ Module map (`src/`):
   preview and jobs.
 - `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
+  Going to a folder keeps the old one on screen until the new one is read,
+  then swaps in one step (`travel`, `commit`).
+- `listings.rs` — one folder's listing (read in the background), the
+  recently visited folders both panels share (local ones kept up to date by
+  GTK, others read again on return), and file icons by name (no file is
+  opened to pick an icon).
 - `pathbar.rs` — the breadcrumbs.
 - `marks.rs` — the set of marked files per panel (by URI).
 - `fkeybar.rs` — the function-key bar at the bottom.

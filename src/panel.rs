@@ -1,6 +1,11 @@
 // One panel: breadcrumbs on top, the current folder's file list, and a status
 // line at the bottom (replaced by the type-to-search field while searching).
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Going to another folder does not empty the list: the new folder's listing
+// (see listings.rs) is read in the background, and only once it is complete
+// does the panel switch to it, all in one step (see `commit`). Until then the
+// panel is still in the old folder, for the eye and for every action.
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -8,20 +13,21 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::dnd::{self, DropCheck, Hover};
+use crate::listings::{self, Listing, Listings};
 use crate::marks::Marks;
 use crate::ops::transfer::Kind;
 use crate::pathbar::PathBar;
 use crate::settings::{Sort, SortColumn};
 
-/// File attributes the list needs; GtkDirectoryList adds "standard::file".
-const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
-standard::icon,standard::size,standard::is-hidden,standard::is-backup,time::modified";
+/// After this long without the new folder ready, the status line says so.
+const LOADING_NOTICE: Duration = Duration::from_millis(300);
 
 /// Marks the FileInfo of the ".." row (see `parent_entry`).
 const PARENT_ENTRY: &str = "kommander::parent-entry";
@@ -35,7 +41,24 @@ pub struct Panel {
     column_view: gtk::ColumnView,
     /// The Name, Size and Modified columns, in `SortColumn` order.
     columns: [gtk::ColumnViewColumn; 3],
-    dir_list: gtk::DirectoryList,
+    /// The folder shown, and the listing of its files.
+    listing: RefCell<Option<Rc<Listing>>>,
+    /// The listings remembered for both panels.
+    listings: Rc<Listings>,
+    /// The start of the file list: the shown listing's files, less the
+    /// hidden ones. Its source is what changes when the folder does.
+    visible: gtk::FilterListModel,
+    /// The folder asked for, while its listing is still being read.
+    pending: RefCell<Option<Pending>>,
+    /// Counts the trips to other folders, so that a late answer about an
+    /// earlier one is recognised and ignored.
+    trip: Cell<u64>,
+    /// A fresh read of the shown folder, where watching it is not reliable.
+    refresh: RefCell<Option<Waiting>>,
+    /// The status line says "Loading…".
+    loading_notice: Cell<bool>,
+    /// Called whenever the panel has gone to another folder.
+    folder_changed: RefCell<Vec<Rc<dyn Fn()>>>,
     hidden_filter: gtk::CustomFilter,
     show_hidden: Rc<Cell<bool>>,
     /// Holds the ".." row while the folder has a parent, otherwise nothing.
@@ -43,8 +66,6 @@ pub struct Panel {
     selection: gtk::SingleSelection,
     marked: Rc<MarkedCells>,
     active: Cell<bool>,
-    /// Name of the entry to put the cursor on once the folder has loaded.
-    cursor_target: RefCell<Option<PathBuf>>,
     /// Name of an entry about to appear (a new or renamed file) to put the
     /// cursor on when it does.
     pending_cursor: Rc<RefCell<Option<PathBuf>>>,
@@ -61,10 +82,36 @@ pub struct Panel {
 
 type DropHandler = dyn Fn(Vec<gio::File>, gio::File, Kind);
 
-impl Panel {
-    pub fn new(folder: &gio::File, show_hidden: bool, sort: Sort) -> Rc<Self> {
-        let dir_list = gtk::DirectoryList::new(Some(ATTRIBUTES), None::<&gio::File>);
+/// A listing being read, and the handler waiting for it to finish (taken
+/// off again when the wait ends, since the listing may be kept for later).
+struct Waiting {
+    listing: Rc<Listing>,
+    handler: Option<glib::SignalHandlerId>,
+}
 
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        if let Some(handler) = self.handler.take() {
+            self.listing.model().disconnect(handler);
+        }
+    }
+}
+
+/// A trip to another folder that is still under way.
+struct Pending {
+    waiting: Waiting,
+    /// Where the cursor goes once there (None: the first row).
+    cursor_on: Option<PathBuf>,
+    started: Option<Instant>,
+}
+
+impl Panel {
+    pub fn new(
+        folder: &gio::File,
+        show_hidden: bool,
+        sort: Sort,
+        listings: Rc<Listings>,
+    ) -> Rc<Self> {
         // Hidden and backup files are left out unless "show hidden" is on.
         let show_hidden = Rc::new(Cell::new(show_hidden));
         let hidden_filter = gtk::CustomFilter::new(glib::clone!(
@@ -75,7 +122,8 @@ impl Panel {
                 show_hidden.get() || (!info.is_hidden() && !info.is_backup())
             }
         ));
-        let visible = gtk::FilterListModel::new(Some(dir_list.clone()), Some(hidden_filter.clone()));
+        let visible =
+            gtk::FilterListModel::new(None::<gio::ListModel>, Some(hidden_filter.clone()));
 
         let marked = Rc::new(MarkedCells::default());
         let columns = [
@@ -96,7 +144,7 @@ impl Panel {
         let sorter = gtk::MultiSorter::new();
         sorter.append(sorter_from(folders_first));
         sorter.append(column_view.sorter().unwrap());
-        let sorted = gtk::SortListModel::new(Some(visible), Some(sorter));
+        let sorted = gtk::SortListModel::new(Some(visible.clone()), Some(sorter));
 
         // The ".." row comes from a list of its own, put in front of the
         // sorted files, so no sort order or filter can move or hide it.
@@ -156,14 +204,20 @@ impl Panel {
             search_entry,
             column_view,
             columns,
-            dir_list,
+            listing: RefCell::default(),
+            listings,
+            visible,
+            pending: RefCell::default(),
+            trip: Cell::new(0),
+            refresh: RefCell::default(),
+            loading_notice: Cell::new(false),
+            folder_changed: RefCell::default(),
             hidden_filter,
             show_hidden,
             parent_row,
             selection,
             marked,
             active: Cell::new(false),
-            cursor_target: RefCell::new(None),
             pending_cursor: Rc::default(),
             dragging: Cell::new(false),
             drag_icon: RefCell::default(),
@@ -213,9 +267,23 @@ impl Panel {
         }
     }
 
-    /// The folder shown, if any.
+    /// The folder shown. (Only while the very first folder is still being
+    /// read, the folder on its way.)
     pub fn folder(&self) -> Option<gio::File> {
-        self.dir_list.file()
+        self.shown().or_else(|| self.pending_listing()).map(|listing| listing.folder())
+    }
+
+    /// The folder the panel is in or on its way to.
+    pub fn destination(&self) -> Option<gio::File> {
+        self.pending_listing().or_else(|| self.shown()).map(|listing| listing.folder())
+    }
+
+    fn shown(&self) -> Option<Rc<Listing>> {
+        self.listing.borrow().clone()
+    }
+
+    fn pending_listing(&self) -> Option<Rc<Listing>> {
+        self.pending.borrow().as_ref().map(|pending| pending.waiting.listing.clone())
     }
 
     /// The column and direction the list is sorted by.
@@ -265,16 +333,6 @@ impl Panel {
         self.path_bar.connect_clicked(move |folder| {
             if let Some(panel) = weak.upgrade() {
                 panel.open_ancestor(folder);
-            }
-        });
-
-        // Once a folder has finished loading, place the cursor.
-        let weak = Rc::downgrade(self);
-        self.dir_list.connect_loading_notify(move |list| {
-            if !list.is_loading()
-                && let Some(panel) = weak.upgrade()
-            {
-                panel.place_cursor();
             }
         });
 
@@ -404,8 +462,13 @@ impl Panel {
         self.search_entry.add_controller(focus);
     }
 
-    /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked.
+    /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked;
+    /// "Loading…" while another folder takes its time.
     fn update_status(&self) {
+        if self.loading_notice.get() {
+            self.status_label.set_label(crate::dialogs::LOADING);
+            return;
+        }
         let marks = self.marked.marks.borrow();
         let any_marked = !marks.is_empty();
         let mut count = 0;
@@ -462,8 +525,12 @@ impl Panel {
 
     /// The names of all files in the folder, hidden ones included.
     pub fn names(&self) -> HashSet<String> {
-        (0..self.dir_list.n_items())
-            .filter_map(|i| self.dir_list.item(i).and_downcast::<gio::FileInfo>())
+        let Some(listing) = self.shown() else {
+            return HashSet::new();
+        };
+        let model = listing.model();
+        (0..model.n_items())
+            .filter_map(|i| model.item(i).and_downcast::<gio::FileInfo>())
             .flat_map(|info| {
                 [info.display_name().to_string(), info.name().to_string_lossy().into_owned()]
             })
@@ -638,36 +705,201 @@ impl Panel {
         }
     }
 
-    /// Shows `folder`; once loaded, the cursor goes to the entry named
-    /// `cursor_on` (or to the first row, ".." if the folder has a parent).
-    fn open(&self, folder: &gio::File, cursor_on: Option<PathBuf>) {
+    /// Goes to `folder`; the cursor goes to the entry named `cursor_on`
+    /// (or to the first row, ".." if the folder has a parent). A remembered
+    /// folder is shown at once; otherwise the old folder stays until the new
+    /// one has been read. Another trip started meanwhile replaces this one.
+    fn open(self: &Rc<Self>, folder: &gio::File, cursor_on: Option<PathBuf>) {
+        self.travel(folder, cursor_on, false);
+    }
+
+    /// `open`, reading the folder afresh with `fresh`.
+    fn travel(self: &Rc<Self>, folder: &gio::File, cursor_on: Option<PathBuf>, fresh: bool) {
+        let trip = self.trip.get() + 1;
+        self.trip.set(trip);
+        self.pending.replace(None);
+        self.refresh.replace(None);
+        let started = timing().then(Instant::now);
+
+        let shown = self.shown().filter(|shown| !fresh && shown.folder().equal(folder));
+        let remembered = if fresh || shown.is_some() { None } else { self.listings.get(folder) };
+        let listing = match shown.or_else(|| remembered.clone()) {
+            Some(listing) => listing,
+            None => Listing::new(folder),
+        };
+        if !listing.is_loading() {
+            self.commit(&listing, cursor_on.clone(), started);
+            if remembered.is_some() {
+                self.check_remembered(&listing, cursor_on, trip);
+            }
+            return;
+        }
+
+        let weak = Rc::downgrade(self);
+        let handler = listing.model().connect_loading_notify(move |list| {
+            if !list.is_loading()
+                && let Some(panel) = weak.upgrade()
+                && panel.trip.get() == trip
+                && let Some(pending) = panel.pending.take()
+            {
+                panel.commit(&pending.waiting.listing, pending.cursor_on.clone(), pending.started);
+            }
+        });
+        let waiting = Waiting { listing, handler: Some(handler) };
+        self.pending.replace(Some(Pending { waiting, cursor_on, started }));
+
+        // On slow drives and network shares, say why nothing happens yet.
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(LOADING_NOTICE, move || {
+            if let Some(panel) = weak.upgrade()
+                && panel.trip.get() == trip
+                && panel.pending.borrow().is_some()
+            {
+                panel.loading_notice.set(true);
+                panel.update_status();
+            }
+        });
+    }
+
+    /// The panel is now in `listing`'s folder: everything that belongs to
+    /// being in a folder changes here, in one go, so the list never shows
+    /// an empty or half-read folder.
+    fn commit(&self, listing: &Rc<Listing>, cursor_on: Option<PathBuf>, started: Option<Instant>) {
+        let folder = listing.folder();
+        self.loading_notice.set(false);
         self.close_search();
+        self.pending_cursor.replace(None);
         self.marked.marks.borrow_mut().clear();
         self.marked.show_all();
-        self.cursor_target.replace(cursor_on);
         let has_parent = folder.parent().is_some();
         if has_parent && self.parent_row.n_items() == 0 {
             self.parent_row.append(&parent_entry());
         } else if !has_parent {
             self.parent_row.remove_all();
         }
-        self.path_bar.set_location(folder);
-        self.dir_list.set_file(Some(folder));
+        self.listing.replace(Some(listing.clone()));
+        self.visible.set_model(Some(listing.model()));
+        self.place_cursor(cursor_on);
+        self.path_bar.set_location(&folder);
+        self.update_status();
+        match listing.error() {
+            Some(error) => {
+                let name = folder.basename().map_or_else(
+                    || folder.parse_name().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                let reason = crate::dialogs::reason(&error);
+                toast(&self.root, &crate::dialogs::failed(&[name], "open", "opened", &reason));
+                self.listings.forget(&folder);
+            }
+            None => self.listings.keep(listing),
+        }
+        if let Some(started) = started {
+            eprintln!(
+                "kommander timing: {} ({} entries) shown after {:.1} ms",
+                folder.uri(),
+                listing.model().n_items(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        let callbacks = self.folder_changed.borrow().clone();
+        for callback in callbacks {
+            callback();
+        }
     }
 
-    /// Goes to `folder` (from the favourites sidebar), cursor on the first row.
-    pub fn go_to(&self, folder: &gio::File) {
-        self.open(folder, None);
+    /// A remembered folder was just shown (cursor on `cursor_on`). A local
+    /// one has been watched all along, but may have been deleted or
+    /// replaced meanwhile; then it is read afresh (a deleted one shows
+    /// empty, and says why). Anything else is read again in the background
+    /// and swapped in when ready (`refreshed`).
+    fn check_remembered(
+        self: &Rc<Self>,
+        listing: &Rc<Listing>,
+        cursor_on: Option<PathBuf>,
+        trip: u64,
+    ) {
+        let folder = listing.folder();
+        if listing.is_watched() {
+            let weak = Rc::downgrade(self);
+            let listing = listing.clone();
+            glib::spawn_future_local(async move {
+                if listing.is_current().await {
+                    return;
+                }
+                let Some(panel) = weak.upgrade() else {
+                    return;
+                };
+                panel.listings.forget(&folder);
+                // Unless the panel has moved on since.
+                if panel.trip.get() == trip {
+                    panel.travel(&folder, cursor_on, true);
+                }
+            });
+            return;
+        }
+        let fresh = Listing::new(&folder);
+        let weak = Rc::downgrade(self);
+        let started = timing().then(Instant::now);
+        let handler = fresh.model().connect_loading_notify(move |list| {
+            if !list.is_loading()
+                && let Some(panel) = weak.upgrade()
+                && panel.trip.get() == trip
+                && let Some(refresh) = panel.refresh.take()
+            {
+                panel.refreshed(&refresh.listing, started);
+            }
+        });
+        self.refresh.replace(Some(Waiting { listing: fresh, handler: Some(handler) }));
+    }
+
+    /// The fresh read of the shown folder is complete: it replaces the
+    /// shown listing, the cursor staying on the same file and marked files
+    /// staying marked. A read that failed changes nothing.
+    fn refreshed(&self, fresh: &Rc<Listing>, started: Option<Instant>) {
+        if let Some(started) = started {
+            eprintln!(
+                "kommander timing: {} ({} entries) read again after {:.1} ms",
+                fresh.folder().uri(),
+                fresh.model().n_items(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        if fresh.error().is_some() {
+            return;
+        }
+        let on = self.cursor_entry().map(|info| info.name());
+        self.listing.replace(Some(fresh.clone()));
+        self.visible.set_model(Some(fresh.model()));
+        self.listings.keep(fresh);
+        let position = on.and_then(|name| self.position_of(&name)).unwrap_or(0);
+        if position < self.selection.n_items() {
+            // The keyboard focus only goes along if the list had it.
+            let focus = self.column_view.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN);
+            select_row(&self.column_view, position, focus);
+        }
+        self.update_status();
+    }
+
+    /// Goes to `folder` (from the favourites sidebar), cursor on the first
+    /// row. Already there: the cursor and marks stay as they are.
+    pub fn go_to(self: &Rc<Self>, folder: &gio::File) {
+        let there = self.pending.borrow().is_none()
+            && self.shown().is_some_and(|shown| shown.folder().equal(folder));
+        if !there {
+            self.open(folder, None);
+        }
     }
 
     /// Calls `f` whenever the panel goes to another folder.
     pub fn connect_folder_changed(&self, f: impl Fn() + 'static) {
-        self.dir_list.connect_file_notify(move |_| f());
+        self.folder_changed.borrow_mut().push(Rc::new(f));
     }
 
-    /// Goes to the parent folder, with the cursor on the folder we came from.
-    pub fn open_parent(&self) {
-        let Some(current) = self.dir_list.file() else {
+    /// Goes to the parent folder, with the cursor on the folder we came
+    /// from. While on the way to another folder, its parent.
+    pub fn open_parent(self: &Rc<Self>) {
+        let Some(current) = self.destination() else {
             return;
         };
         if let Some(parent) = current.parent() {
@@ -677,14 +909,16 @@ impl Panel {
 
     /// Goes to `folder`, one of the current folder's ancestors, with the
     /// cursor on the subfolder we came through.
-    fn open_ancestor(&self, folder: &gio::File) {
-        let mut child = self.dir_list.file();
-        while let Some(file) = child {
-            match file.parent() {
-                Some(parent) if parent.equal(folder) => {
-                    return self.open(folder, file.basename());
+    fn open_ancestor(self: &Rc<Self>, folder: &gio::File) {
+        for start in [self.destination(), self.folder()] {
+            let mut child = start;
+            while let Some(file) = child {
+                match file.parent() {
+                    Some(parent) if parent.equal(folder) => {
+                        return self.open(folder, file.basename());
+                    }
+                    parent => child = parent,
                 }
-                parent => child = parent,
             }
         }
         self.open(folder, None);
@@ -692,7 +926,7 @@ impl Panel {
 
     /// Opens the entry at `position`: folders in the panel, files with their
     /// default app, ".." goes to the parent folder.
-    fn activate(&self, position: u32) {
+    fn activate(self: &Rc<Self>, position: u32) {
         if self.is_parent_row(position) {
             self.open_parent();
             return;
@@ -754,7 +988,7 @@ impl Panel {
 
     /// Opens a terminal in the current folder (Shift+F4).
     pub fn open_terminal(&self) {
-        let Some(path) = self.dir_list.file().and_then(|folder| folder.path()) else {
+        let Some(path) = self.folder().and_then(|folder| folder.path()) else {
             toast(&self.root, "Terminals can only be opened in local folders");
             return;
         };
@@ -770,8 +1004,8 @@ impl Panel {
         }
     }
 
-    fn place_cursor(&self) {
-        let target = self.cursor_target.take();
+    /// Puts the cursor on the entry named `target`, or on the first row.
+    fn place_cursor(&self, target: Option<PathBuf>) {
         let count = self.selection.n_items();
         if count == 0 {
             return;
@@ -782,7 +1016,7 @@ impl Panel {
 
         self.column_view
             .scroll_to(position, None, gtk::ListScrollFlags::SELECT, None);
-        // Reloading the list drops the keyboard focus; the active panel takes it back.
+        // Changing the list drops the keyboard focus; the active panel takes it back.
         if self.active.get() && !self.is_searching() {
             self.focus();
         }
@@ -847,8 +1081,10 @@ impl Panel {
         }
         let icon = self
             .entry(position)
-            .and_then(|info| info.icon())
-            .unwrap_or_else(|| gio::ThemedIcon::new("text-x-generic").upcast());
+            .map_or_else(
+                || gio::ThemedIcon::new("text-x-generic").upcast(),
+                |info| listings::icon_for(&info),
+            );
         self.drag_icon.replace(Some((icon, files.len())));
         // Other apps receive this as a list of URIs ("text/uri-list").
         Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()))
@@ -1027,7 +1263,7 @@ impl Panel {
     }
 
     /// Closes the search field and opens the entry under the cursor.
-    pub fn search_activate(&self) {
+    pub fn search_activate(self: &Rc<Self>) {
         let position = self.selection.selected();
         self.close_search();
         if position != gtk::INVALID_LIST_POSITION {
@@ -1204,6 +1440,13 @@ fn drag_picture(icon: &gio::Icon, count: usize) -> gtk::Widget {
     overlay.upcast()
 }
 
+/// Whether to print how long each trip to a folder took (stderr): set
+/// KOMMANDER_TIMING=1 to measure. Looked up once.
+fn timing() -> bool {
+    static TIMING: OnceLock<bool> = OnceLock::new();
+    *TIMING.get_or_init(|| std::env::var_os("KOMMANDER_TIMING").is_some())
+}
+
 /// Shows a short message on the window's toast overlay.
 fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Some(overlay) = widget
@@ -1364,9 +1607,29 @@ fn folders_first(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
 
 /// By name, ignoring case (and sorting "file2" before "file10").
 fn compare_names(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
-    let a_key = glib::FilenameCollationKey::from(a.display_name().to_lowercase());
-    let b_key = glib::FilenameCollationKey::from(b.display_name().to_lowercase());
-    a_key.cmp(&b_key)
+    with_name_key(a, |a| with_name_key(b, |b| a.cmp(b)))
+}
+
+/// Where `with_name_key` keeps a file's sort key.
+const NAME_KEY: &str = "kommander-name-key";
+
+/// Runs `f` with the key `compare_names` sorts `info` by. Working it out is
+/// most of the time sorting a large folder takes, so it is worked out once
+/// per file and kept with it (as Nautilus does). A file whose name changes
+/// comes as a new FileInfo, with a new key.
+fn with_name_key<T>(info: &gio::FileInfo, f: impl FnOnce(&glib::FilenameCollationKey) -> T) -> T {
+    // SAFETY: only this function stores data under NAME_KEY, always a
+    // FilenameCollationKey, and never replaces or steals it, so the
+    // pointer stays valid for as long as `info` lives (beyond this call).
+    unsafe {
+        if let Some(key) = info.data::<glib::FilenameCollationKey>(NAME_KEY) {
+            return f(key.as_ref());
+        }
+        let key = glib::FilenameCollationKey::from(info.display_name().to_lowercase());
+        let result = f(&key);
+        info.set_data(NAME_KEY, key);
+        result
+    }
 }
 
 /// By size, then name. Folders have no meaningful size, so they go by name.
@@ -1444,11 +1707,7 @@ fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
         |cell, info| {
             let icon = cell.first_child().and_downcast::<gtk::Image>().unwrap();
             let label = cell.last_child().and_downcast::<gtk::Label>().unwrap();
-            icon.set_from_gicon(
-                &info
-                    .icon()
-                    .unwrap_or_else(|| gio::ThemedIcon::new("text-x-generic").upcast()),
-            );
+            icon.set_from_gicon(&listings::icon_for(info));
             label.set_label(&info.display_name());
         },
     );

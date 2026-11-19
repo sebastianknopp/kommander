@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::jobs::{self, JobId, Jobs};
+use crate::listings::Listings;
 use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary};
 use crate::panel::{Panel, entry_file};
 use crate::progress::Operations;
@@ -23,6 +24,8 @@ use crate::{dialogs, fkeybar, ops, preferences};
 /// Window-wide state: the two panels, which of them is active, and the settings.
 struct State {
     panels: [Rc<Panel>; 2],
+    /// Recently visited folders, shared by both panels.
+    listings: Rc<Listings>,
     active: Cell<usize>,
     panels_box: gtk::Box,
     /// The two halves of the window. Each holds its panel and, to show in
@@ -154,11 +157,14 @@ fn start_folder(uri: Option<&str>) -> gio::File {
 
 pub fn build(app: &adw::Application) {
     let settings = Settings::load();
+    // Recently visited folders, remembered for both panels.
+    let listings = Rc::new(Listings::default());
     let panels = [0, 1].map(|i| {
         Panel::new(
             &start_folder(settings.folders[i].as_deref()),
             settings.show_hidden,
             settings.sort[i],
+            listings.clone(),
         )
     });
 
@@ -193,6 +199,7 @@ pub fn build(app: &adw::Application) {
         let on_cancel = state_weak.clone();
         State {
             panels,
+            listings: listings.clone(),
             active: Cell::new(0),
             panels_box: panels_box.clone(),
             slots,
@@ -571,11 +578,8 @@ fn connect_sidebar(state: &Rc<State>) {
         let Some(state) = state_weak.upgrade() else {
             return;
         };
-        let panel = &state.panels[state.active.get()];
         // Already there: the cursor and marks stay as they are.
-        if !panel.folder().is_some_and(|shown| shown.equal(&folder)) {
-            panel.go_to(&folder);
-        }
+        state.panels[state.active.get()].go_to(&folder);
         state.focus_panel();
     });
 
@@ -610,11 +614,15 @@ fn connect_sidebar(state: &Rc<State>) {
             return;
         };
         let home = gio::File::for_path(glib::home_dir());
+        let inside = |folder: Option<gio::File>| {
+            folder.is_some_and(|folder| folder.equal(&root) || folder.has_prefix(&root))
+        };
         for panel in &state.panels {
-            if panel.folder().is_some_and(|folder| folder.equal(&root) || folder.has_prefix(&root)) {
+            if inside(panel.folder()) || inside(panel.destination()) {
                 panel.go_to(&home);
             }
         }
+        state.listings.forget_under(&root);
     });
 }
 

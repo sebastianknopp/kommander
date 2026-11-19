@@ -360,6 +360,9 @@ pub fn favourites_not_saved(reason: &str) -> String {
 pub const FAVOURITES_UNREADABLE: &str =
     "Favourites can’t be changed, because the bookmarks file could not be read";
 
+/// The status line while a folder takes a moment to be read.
+pub const LOADING: &str = "Loading…";
+
 /// The toast when a folder is dropped onto itself or one of its subfolders.
 pub const INTO_ITSELF: &str = "A folder can’t be put inside itself";
 

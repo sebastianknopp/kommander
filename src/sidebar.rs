@@ -305,14 +305,42 @@ impl Sidebar {
         let scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(220)
-            .css_classes(["favourites"])
+            .vexpand(true)
             .child(&list)
             .build();
+        // A strip on top, in line with the panels' path strips.
+        let title = gtk::Label::builder()
+            .label("Favourites")
+            .xalign(0.0)
+            .css_classes(["favourites-title"])
+            .build();
+        let column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(["favourites"])
+            .build();
+        column.append(&title);
+        column.append(&scrolled);
         let revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideRight)
             .reveal_child(shown)
-            .child(&scrolled)
+            .child(&column)
+            .css_classes(["favourites-bar"])
             .build();
+        // While the keyboard is in here, the orange line that marks where
+        // the keys go sits under this strip instead of the active panel's
+        // (see style.css).
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_enter(glib::clone!(
+            #[weak]
+            revealer,
+            move |_| revealer.add_css_class("keyboard")
+        ));
+        focus.connect_leave(glib::clone!(
+            #[weak]
+            revealer,
+            move |_| revealer.remove_css_class("keyboard")
+        ));
+        revealer.add_controller(focus);
 
         let sidebar = Rc::new(Sidebar {
             revealer,

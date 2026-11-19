@@ -212,6 +212,28 @@
   background: none;
 }
 
+/* The strip on top lines up with the panels' path strips (same padding,
+ * line and height). The orange line marks where the keyboard is: under the
+ * active panel's strip normally, under this one while the keys are in the
+ * sidebar. The panel keeps its tint: a favourite opens there. */
+.favourites .favourites-title {
+  min-height: 28px;
+  padding: 3px 12px 1px 18px;
+  font-weight: bold;
+  color: color-mix(in srgb, var(--sidebar-fg-color) 55%, transparent);
+  border-bottom: 3px solid transparent;
+}
+
+.favourites-bar.keyboard .favourites-title {
+  color: var(--sidebar-fg-color);
+  border-bottom-color: var(--orange-3);
+}
+
+.favourites-bar.keyboard ~ .panels .panel.active .path-strip,
+.favourites-bar.keyboard ~ * .panels .panel.active .path-strip {
+  border-bottom-color: transparent;
+}
+
 /* The lines between Home and Trash, the favourites and the drives. */
 .favourites list > separator {
   margin: 6px 12px;
