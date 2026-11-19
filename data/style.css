@@ -1,0 +1,65 @@
+/* Der Kommander stylesheet, loaded on top of libadwaita.
+ * Colours come only from libadwaita's named colours (CSS variables), so
+ * light and dark mode follow the system automatically.
+ * The file list styling follows Nautilus's list view (GPL-3.0-or-later). */
+
+/* Thin line between the two panels. */
+.panels > .panel + .panel {
+  border-left: 1px solid var(--border-color);
+}
+
+/* Path above each file list (to be replaced by breadcrumbs). */
+.panel .path-label {
+  padding: 9px 18px 3px 18px;
+  font-weight: bold;
+  opacity: 0.55;
+}
+
+.panel.active .path-label {
+  opacity: 1;
+}
+
+/* --- File list, modelled on Nautilus's list view --- */
+
+/* Horizontal padding goes on the columnview so column widths add up. */
+.panel columnview {
+  background: none;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.panel columnview > listview {
+  padding-top: 6px;
+  padding-bottom: 12px;
+  margin-left: -12px;
+  margin-right: -12px;
+  border-spacing: 2px;
+  min-width: 24px;
+}
+
+.panel columnview > listview > row {
+  margin-left: 12px;
+  margin-right: 12px;
+  border-radius: 9px;
+}
+
+/* The cell's child carries the padding so the whole row is clickable. */
+.panel columnview > listview > row > cell {
+  padding: 0;
+}
+
+.panel .file-cell {
+  padding: 4px 6px;
+}
+
+/* The cursor is the selected row, so the extra focus outline is redundant. */
+.panel columnview > listview > row:focus-visible {
+  outline: none;
+}
+
+/* Cursor row: accent colour in the active panel, neutral grey elsewhere
+ * (Nautilus uses the same grey trick for its whole list view). */
+.panel:not(.active) columnview > listview {
+  --accent-bg-color: color-mix(in srgb, var(--window-fg-color) 45%, var(--view-bg-color));
+  --accent-color: var(--window-fg-color);
+}

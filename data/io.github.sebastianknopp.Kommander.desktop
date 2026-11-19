@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Der Kommander
+GenericName=File Manager
+Comment=Browse and manage files in two panels
+Exec=kommander
+Icon=system-file-manager
+Terminal=false
+Categories=GTK;GNOME;System;Core;FileTools;FileManager;
+Keywords=folder;manager;explore;disk;filesystem;commander;
+StartupNotify=true
