@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -11,6 +12,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::marks::Marks;
 use crate::pathbar::PathBar;
 use crate::settings::{Sort, SortColumn};
 
@@ -31,6 +33,7 @@ pub struct Panel {
     hidden_filter: gtk::CustomFilter,
     show_hidden: Rc<Cell<bool>>,
     selection: gtk::SingleSelection,
+    marked: Rc<MarkedCells>,
     active: Cell<bool>,
     /// Name of the entry to put the cursor on once the folder has loaded.
     cursor_target: RefCell<Option<PathBuf>>,
@@ -52,7 +55,12 @@ impl Panel {
         ));
         let visible = gtk::FilterListModel::new(Some(dir_list.clone()), Some(hidden_filter.clone()));
 
-        let columns = [name_column(), size_column(), modified_column()];
+        let marked = Rc::new(MarkedCells::default());
+        let columns = [
+            name_column(&marked),
+            size_column(&marked),
+            modified_column(&marked),
+        ];
         let column_view = gtk::ColumnView::builder()
             .reorderable(false)
             .vexpand(true)
@@ -122,6 +130,7 @@ impl Panel {
             hidden_filter,
             show_hidden,
             selection,
+            marked,
             active: Cell::new(false),
             cursor_target: RefCell::new(None),
         });
@@ -233,13 +242,39 @@ impl Panel {
             }
         });
 
-        // Keep the status line up to date while the folder loads or changes.
+        // Keep the status line up to date while the folder loads or changes,
+        // and forget the marks of files that have gone.
         let weak = Rc::downgrade(self);
         self.selection.connect_items_changed(move |_, _, _, _| {
             if let Some(panel) = weak.upgrade() {
+                panel.forget_vanished_marks();
                 panel.update_status();
             }
         });
+
+        // Ctrl+click toggles a row's mark without moving the cursor. Caught
+        // before the row sees the click, so the row's own click (which would
+        // move the cursor) is cancelled.
+        let ctrl_click = gtk::GestureClick::new();
+        ctrl_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        ctrl_click.connect_pressed(move |gesture, _, x, y| {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            if !gesture
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                return;
+            }
+            let picked = panel.column_view.pick(x, y, gtk::PickFlags::DEFAULT);
+            if let Some(position) = picked.and_then(|widget| panel.marked.position_of(&widget)) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                panel.toggle_mark(position);
+            }
+        });
+        self.column_view.add_controller(ctrl_click);
 
         // Type-to-search: every change of the text jumps to the first match.
         let weak = Rc::downgrade(self);
@@ -260,24 +295,118 @@ impl Panel {
         self.search_entry.add_controller(focus);
     }
 
+    /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked.
     fn update_status(&self) {
-        let count = self.selection.n_items();
+        let marks = self.marked.marks.borrow();
+        let any_marked = !marks.is_empty();
+        let mut count = 0;
         let mut file_bytes = 0u64;
         let mut has_files = false;
-        for info in (0..count).filter_map(|i| self.entry(i)) {
+        for info in (0..self.selection.n_items()).filter_map(|i| self.entry(i)) {
+            if any_marked && !entry_uri(&info).is_some_and(|uri| marks.contains(&uri)) {
+                continue;
+            }
+            count += 1;
             if info.file_type() != gio::FileType::Directory {
                 has_files = true;
                 file_bytes += info.size().max(0) as u64;
             }
         }
-        self.status_label
-            .set_label(&status_text(count, has_files.then_some(file_bytes)));
+        self.status_label.set_label(&status_text(
+            count,
+            has_files.then_some(file_bytes),
+            any_marked,
+        ));
+    }
+
+    // --- Marked files ---
+
+    /// The files an operation (copy, move, trash) should act on: the marked
+    /// files, in list order, if there are any; otherwise the file under the
+    /// cursor; nothing if the folder is empty.
+    #[allow(dead_code)] // Used by the file operations of later steps.
+    pub fn files_to_act_on(&self) -> Vec<gio::File> {
+        let marks = self.marked.marks.borrow();
+        if marks.is_empty() {
+            return self
+                .selection
+                .selected_item()
+                .and_downcast::<gio::FileInfo>()
+                .and_then(|info| entry_file(&info))
+                .into_iter()
+                .collect();
+        }
+        (0..self.selection.n_items())
+            .filter_map(|i| self.entry(i))
+            .filter_map(|info| entry_file(&info))
+            .filter(|file| marks.contains(&file.uri()))
+            .collect()
+    }
+
+    /// Toggles the mark on the file at `position`.
+    fn toggle_mark(&self, position: u32) {
+        let Some(uri) = self.entry(position).and_then(|info| entry_uri(&info)) else {
+            return;
+        };
+        self.marked.marks.borrow_mut().toggle(&uri);
+        self.marked.show_all();
+        self.update_status();
+    }
+
+    /// Toggles the mark on the file under the cursor and moves the cursor one
+    /// row down (Space, Insert).
+    pub fn toggle_mark_and_advance(&self) {
+        let position = self.selection.selected();
+        if position == gtk::INVALID_LIST_POSITION {
+            return;
+        }
+        self.toggle_mark(position);
+        if position + 1 < self.selection.n_items() {
+            self.column_view.scroll_to(
+                position + 1,
+                None,
+                gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
+                None,
+            );
+        }
+    }
+
+    /// Marks every file in the panel (Ctrl+A), or none (Ctrl+Shift+A).
+    pub fn mark_all(&self, mark: bool) {
+        {
+            let mut marks = self.marked.marks.borrow_mut();
+            marks.clear();
+            if mark {
+                marks.mark_all(
+                    (0..self.selection.n_items())
+                        .filter_map(|i| self.entry(i))
+                        .filter_map(|info| entry_uri(&info)),
+                );
+            }
+        }
+        self.marked.show_all();
+        self.update_status();
+    }
+
+    fn forget_vanished_marks(&self) {
+        if self.marked.marks.borrow().is_empty() {
+            return;
+        }
+        let present: HashSet<String> = (0..self.selection.n_items())
+            .filter_map(|i| self.entry(i))
+            .filter_map(|info| entry_uri(&info))
+            .collect();
+        if self.marked.marks.borrow_mut().keep_only(&present) {
+            self.marked.show_all();
+        }
     }
 
     /// Shows `folder`; once loaded, the cursor goes to the entry named
     /// `cursor_on` (or to the first entry).
     fn open(&self, folder: &gio::File, cursor_on: Option<PathBuf>) {
         self.close_search();
+        self.marked.marks.borrow_mut().clear();
+        self.marked.show_all();
         self.cursor_target.replace(cursor_on);
         self.path_bar.set_location(folder);
         self.dir_list.set_file(Some(folder));
@@ -495,6 +624,68 @@ fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast()
 }
 
+/// The URI marks are kept by.
+fn entry_uri(info: &gio::FileInfo) -> Option<String> {
+    entry_file(info).map(|file| file.uri().into())
+}
+
+/// The panel's marks, plus every cell of the file list so that marked rows
+/// can be redrawn when the marks change. Each cell's content gets the
+/// "marked" CSS class; GtkColumnView offers no way to restyle whole rows.
+/// (Reaching the row widget through the cell's parent is not safe: while a
+/// row is being built, taking a reference to it from Rust destroys it.)
+#[derive(Default)]
+struct MarkedCells {
+    marks: RefCell<Marks>,
+    cells: RefCell<Vec<glib::WeakRef<gtk::ColumnViewCell>>>,
+}
+
+impl MarkedCells {
+    /// Shows `cell` as marked or not.
+    fn show(&self, cell: &gtk::ColumnViewCell) {
+        let Some(child) = cell.child() else {
+            return;
+        };
+        let marked = cell
+            .item()
+            .and_downcast::<gio::FileInfo>()
+            .and_then(|info| entry_uri(&info))
+            .is_some_and(|uri| self.marks.borrow().contains(&uri));
+        if marked {
+            child.add_css_class("marked");
+        } else {
+            child.remove_css_class("marked");
+        }
+    }
+
+    fn show_all(&self) {
+        self.cells.borrow_mut().retain(|cell| match cell.upgrade() {
+            Some(cell) => {
+                self.show(&cell);
+                true
+            }
+            None => false,
+        });
+    }
+
+    /// The list position of the row `widget` (or one of its ancestors) belongs to.
+    fn position_of(&self, widget: &gtk::Widget) -> Option<u32> {
+        let cells = self.cells.borrow();
+        let mut current = Some(widget.clone());
+        while let Some(widget) = current {
+            let found = cells
+                .iter()
+                .filter_map(|cell| cell.upgrade())
+                .find(|cell| cell.child().as_ref() == Some(&widget) && cell.item().is_some());
+            if let Some(cell) = found {
+                return Some(cell.position());
+            }
+            current = widget.parent();
+        }
+        None
+    }
+}
+
 /// Where type-to-search should look for a match.
 #[derive(Clone, Copy, Debug)]
 enum Jump {
@@ -532,13 +723,15 @@ fn find_match(names: &[String], query: &str, jump: Jump) -> Option<usize> {
     }
 }
 
-/// The status line text, e.g. "14 items · 10.3 MB". `file_bytes` is the total
-/// size of the files (folders are not counted), or None if there are no files.
-fn status_text(count: u32, file_bytes: Option<u64>) -> String {
-    let items = if count == 1 {
-        "1 item".to_string()
-    } else {
-        format!("{count} items")
+/// The status line text, e.g. "14 items · 10.3 MB", or "3 marked · 1.2 MB"
+/// when `marked` (then `count` and `file_bytes` describe the marked files).
+/// `file_bytes` is the total size of the files (folders are not counted), or
+/// None if there are no files.
+fn status_text(count: u32, file_bytes: Option<u64>, marked: bool) -> String {
+    let items = match (marked, count) {
+        (true, _) => format!("{count} marked"),
+        (false, 1) => "1 item".to_string(),
+        (false, _) => format!("{count} items"),
     };
     match file_bytes {
         Some(bytes) => format!("{items} · {}", glib::format_size(bytes)),
@@ -586,19 +779,22 @@ fn sorter_from(compare: fn(&gio::FileInfo, &gio::FileInfo) -> Ordering) -> gtk::
 /// `bind`, sorted by `compare` when its header is clicked.
 fn column(
     title: &str,
+    marked: &Rc<MarkedCells>,
     compare: fn(&gio::FileInfo, &gio::FileInfo) -> Ordering,
     setup: impl Fn() -> gtk::Widget + 'static,
     bind: impl Fn(&gtk::Widget, &gio::FileInfo) + 'static,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
+    let setup_marked = marked.clone();
     factory.connect_setup(move |_, cell| {
         let cell = cell.downcast_ref::<gtk::ColumnViewCell>().unwrap();
         let child = setup();
         child.add_css_class("file-cell");
         cell.set_child(Some(&child));
+        setup_marked.cells.borrow_mut().push(cell.downgrade());
     });
-    // Per-row state (for example "marked" files) can later be shown by
-    // toggling a CSS class here; every cell of a row goes through this bind.
+    // Every cell of a row goes through here, so each shows the row's mark.
+    let bind_marked = marked.clone();
     factory.connect_bind(move |_, cell| {
         let cell = cell.downcast_ref::<gtk::ColumnViewCell>().unwrap();
         let (Some(child), Some(info)) = (cell.child(), cell.item().and_downcast::<gio::FileInfo>())
@@ -606,15 +802,17 @@ fn column(
             return;
         };
         bind(&child, &info);
+        bind_marked.show(cell);
     });
     let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
     column.set_sorter(Some(&sorter_from(compare)));
     column
 }
 
-fn name_column() -> gtk::ColumnViewColumn {
+fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     let column = column(
         "Name",
+        marked,
         compare_names,
         || {
             // Its size comes from style.css, so it can change live.
@@ -644,9 +842,10 @@ fn name_column() -> gtk::ColumnViewColumn {
     column
 }
 
-fn size_column() -> gtk::ColumnViewColumn {
+fn size_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     let column = column(
         "Size",
+        marked,
         compare_sizes,
         || detail_label(1.0),
         |cell, info| {
@@ -662,9 +861,10 @@ fn size_column() -> gtk::ColumnViewColumn {
     column
 }
 
-fn modified_column() -> gtk::ColumnViewColumn {
+fn modified_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     let column = column(
         "Modified",
+        marked,
         compare_modified,
         || detail_label(0.0),
         |cell, info| {
@@ -727,6 +927,19 @@ mod tests {
         // Nothing starts with "ic": fall back to names containing it.
         assert_eq!(find_match(&list, "ic", Jump::First), Some(1));
         assert_eq!(find_match(&list, "xyz", Jump::First), None);
+    }
+
+    #[test]
+    fn status_counts_items_or_marked_files() {
+        // GLib puts a non-breaking space between number and unit.
+        let text = |count, bytes, marked| status_text(count, bytes, marked).replace('\u{a0}', " ");
+        assert_eq!(text(0, None, false), "0 items");
+        assert_eq!(text(1, None, false), "1 item");
+        assert_eq!(text(14, Some(10_300_000), false), "14 items · 10.3 MB");
+        assert_eq!(text(3, Some(1_200_000), true), "3 marked · 1.2 MB");
+        assert_eq!(text(1, Some(500), true), "1 marked · 500 bytes");
+        // Only folders marked: they count, but have no size.
+        assert_eq!(text(2, None, true), "2 marked");
     }
 
     #[test]

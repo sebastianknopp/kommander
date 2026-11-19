@@ -156,6 +156,27 @@
   --accent-color: var(--window-fg-color);
 }
 
+/* No hover highlight on rows: this is a keyboard-first list, and a highlight
+ * left behind under a parked mouse pointer reads as a second cursor. Only a
+ * click changes a row's background. The selected colour is libadwaita's own
+ * (25%), repeated here so hovering the cursor row doesn't brighten it. */
+.panel columnview > listview > row:hover:not(:selected) {
+  background-color: transparent;
+}
+
+.panel columnview > listview > row:selected:hover {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
+}
+
+/* Marked files (Space, Insert, Ctrl+click): as in Norton Commander, their
+ * names change colour, here to the warm warning colour. Colour only: a
+ * heavier weight would make the name jump sideways when marked. Size and
+ * date follow in the same colour, still dimmed. */
+.panel label.file-cell.marked,
+.panel .file-cell.marked > label {
+  color: var(--warning-color);
+}
+
 /* About dialog: the Superstau quote that replaces the three cars. */
 .superstau-quote {
   font-style: italic;

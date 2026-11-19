@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod fkeybar;
+mod marks;
 mod panel;
 mod pathbar;
 mod preferences;

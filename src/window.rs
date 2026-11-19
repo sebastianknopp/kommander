@@ -183,6 +183,20 @@ pub fn build(app: &adw::Application) {
         {
             return glib::Propagation::Proceed;
         }
+        let active = window_state.active.get();
+        let panel = &window_state.panels[active];
+
+        // Ctrl+A marks all files, Ctrl+Shift+A none. (Caught here because
+        // the list would otherwise take Ctrl+A as its own "select all".)
+        // While searching, Ctrl+A selects the search text instead.
+        if !panel.is_searching()
+            && modifiers & !gdk::ModifierType::SHIFT_MASK == gdk::ModifierType::CONTROL_MASK
+            && key.to_lower() == gdk::Key::a
+        {
+            panel.mark_all(!modifiers.contains(gdk::ModifierType::SHIFT_MASK));
+            return glib::Propagation::Stop;
+        }
+
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
@@ -190,8 +204,6 @@ pub fn build(app: &adw::Application) {
         ) {
             return glib::Propagation::Proceed;
         }
-        let active = window_state.active.get();
-        let panel = &window_state.panels[active];
         let is_tab = matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab);
 
         if panel.is_searching() {
@@ -220,8 +232,15 @@ pub fn build(app: &adw::Application) {
             panel.open_parent();
             return glib::Propagation::Stop;
         }
-        // A printable character starts the search; Space does not (it is
-        // kept for marking files).
+        // Space and Insert mark the file under the cursor and move on.
+        if matches!(
+            key,
+            gdk::Key::space | gdk::Key::KP_Space | gdk::Key::Insert | gdk::Key::KP_Insert
+        ) {
+            panel.toggle_mark_and_advance();
+            return glib::Propagation::Stop;
+        }
+        // A printable character starts the search (Space never gets here).
         if let Some(c) = key.to_unicode()
             && !c.is_control()
             && !c.is_whitespace()
@@ -429,6 +448,15 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     search.add(adw::ShortcutsItem::new("Open and close the search", "Return"));
     search.add(adw::ShortcutsItem::new("Close the search", "Escape"));
 
+    let marking = adw::ShortcutsSection::new(Some("Marking Files"));
+    marking.add(adw::ShortcutsItem::new("Mark or unmark, then move down", "space Insert"));
+    marking.add(adw::ShortcutsItem::new("Mark all files", "<Control>a"));
+    marking.add(adw::ShortcutsItem::new("Unmark all files", "<Control><Shift>a"));
+    marking.add(adw::ShortcutsItem::new(
+        "Hold while clicking a file to mark or unmark it",
+        "<Control>",
+    ));
+
     let files = adw::ShortcutsSection::new(Some("Files"));
     files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));
     files.add(adw::ShortcutsItem::new("Open a terminal here", "<Shift>F4"));
@@ -440,6 +468,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let dialog = adw::ShortcutsDialog::new();
     dialog.add(panels);
     dialog.add(search);
+    dialog.add(marking);
     dialog.add(files);
     dialog.add(general);
     dialog
