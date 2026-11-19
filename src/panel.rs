@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -19,6 +20,9 @@ use crate::settings::{Sort, SortColumn};
 /// File attributes the list needs; GtkDirectoryList adds "standard::file".
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
 standard::icon,standard::size,standard::is-hidden,standard::is-backup,time::modified";
+
+/// Marks the FileInfo of the ".." row (see `parent_entry`).
+const PARENT_ENTRY: &str = "kommander::parent-entry";
 
 pub struct Panel {
     root: gtk::Box,
@@ -32,11 +36,16 @@ pub struct Panel {
     dir_list: gtk::DirectoryList,
     hidden_filter: gtk::CustomFilter,
     show_hidden: Rc<Cell<bool>>,
+    /// Holds the ".." row while the folder has a parent, otherwise nothing.
+    parent_row: gio::ListStore,
     selection: gtk::SingleSelection,
     marked: Rc<MarkedCells>,
     active: Cell<bool>,
     /// Name of the entry to put the cursor on once the folder has loaded.
     cursor_target: RefCell<Option<PathBuf>>,
+    /// Name of an entry about to appear (a new or renamed file) to put the
+    /// cursor on when it does.
+    pending_cursor: Rc<RefCell<Option<PathBuf>>>,
 }
 
 impl Panel {
@@ -75,7 +84,15 @@ impl Panel {
         sorter.append(sorter_from(folders_first));
         sorter.append(column_view.sorter().unwrap());
         let sorted = gtk::SortListModel::new(Some(visible), Some(sorter));
-        let selection = gtk::SingleSelection::new(Some(sorted));
+
+        // The ".." row comes from a list of its own, put in front of the
+        // sorted files, so no sort order or filter can move or hide it.
+        let parent_row = gio::ListStore::new::<gio::FileInfo>();
+        let parts = gio::ListStore::new::<gio::ListModel>();
+        parts.append(&parent_row);
+        parts.append(&sorted);
+        let rows = gtk::FlattenListModel::new(Some(parts));
+        let selection = gtk::SingleSelection::new(Some(rows));
         column_view.set_model(Some(&selection));
 
         let order = if sort.descending {
@@ -129,10 +146,12 @@ impl Panel {
             dir_list,
             hidden_filter,
             show_hidden,
+            parent_row,
             selection,
             marked,
             active: Cell::new(false),
             cursor_target: RefCell::new(None),
+            pending_cursor: Rc::default(),
         });
         panel.connect_signals();
         panel.open(folder, None);
@@ -249,6 +268,7 @@ impl Panel {
             if let Some(panel) = weak.upgrade() {
                 panel.forget_vanished_marks();
                 panel.update_status();
+                panel.place_pending_cursor();
             }
         });
 
@@ -323,15 +343,12 @@ impl Panel {
 
     /// The files an operation (copy, move, trash) should act on: the marked
     /// files, in list order, if there are any; otherwise the file under the
-    /// cursor; nothing if the folder is empty.
-    #[allow(dead_code)] // Used by the file operations of later steps.
+    /// cursor; nothing if the folder is empty or the cursor is on "..".
     pub fn files_to_act_on(&self) -> Vec<gio::File> {
         let marks = self.marked.marks.borrow();
         if marks.is_empty() {
             return self
-                .selection
-                .selected_item()
-                .and_downcast::<gio::FileInfo>()
+                .cursor_entry()
                 .and_then(|info| entry_file(&info))
                 .into_iter()
                 .collect();
@@ -341,6 +358,101 @@ impl Panel {
             .filter_map(|info| entry_file(&info))
             .filter(|file| marks.contains(&file.uri()))
             .collect()
+    }
+
+    /// The file under the cursor, if any; None on the ".." row, which is
+    /// not a file.
+    pub fn cursor_entry(&self) -> Option<gio::FileInfo> {
+        self.entry(self.selection.selected())
+    }
+
+    /// The names of all files in the folder, hidden ones included.
+    pub fn names(&self) -> HashSet<String> {
+        (0..self.dir_list.n_items())
+            .filter_map(|i| self.dir_list.item(i).and_downcast::<gio::FileInfo>())
+            .flat_map(|info| {
+                [info.display_name().to_string(), info.name().to_string_lossy().into_owned()]
+            })
+            .collect()
+    }
+
+    /// The name of the row the cursor should go to once `leaving` are gone
+    /// (trashed or deleted): the next row that stays, else the one before.
+    pub fn neighbour_after(&self, leaving: &[gio::File]) -> Option<PathBuf> {
+        let leaving: HashSet<String> = leaving.iter().map(|file| file.uri().into()).collect();
+        let count = self.selection.n_items();
+        let cursor = self.selection.selected().min(count);
+        let stays = |&i: &u32| {
+            self.entry(i)
+                .and_then(|info| entry_uri(&info))
+                .is_some_and(|uri| !leaving.contains(&uri))
+        };
+        (cursor..count)
+            .find(stays)
+            .or_else(|| (0..cursor).rev().find(stays))
+            .and_then(|i| self.entry(i))
+            .map(|info| info.name())
+    }
+
+    /// Puts the cursor on the entry called `name`, now if it is there,
+    /// otherwise as soon as it appears (the folder's monitor reports new
+    /// files a moment after they were made). Gives up after a few seconds.
+    pub fn put_cursor_on(&self, name: PathBuf) {
+        if self.select_name(&name) {
+            return;
+        }
+        self.pending_cursor.replace(Some(name.clone()));
+        let pending = Rc::downgrade(&self.pending_cursor);
+        glib::timeout_add_local_once(Duration::from_secs(3), move || {
+            if let Some(pending) = pending.upgrade() {
+                let mut pending = pending.borrow_mut();
+                if pending.as_ref() == Some(&name) {
+                    *pending = None;
+                }
+            }
+        });
+    }
+
+    fn place_pending_cursor(&self) {
+        let Some(name) = self.pending_cursor.borrow().clone() else {
+            return;
+        };
+        if self.position_of(&name).is_some() {
+            self.pending_cursor.replace(None);
+            // Not while the list is still telling everyone about the change.
+            let selection = self.selection.clone();
+            let column_view = self.column_view.clone();
+            let focus = self.active.get() && !self.is_searching();
+            glib::idle_add_local_once(move || {
+                let position = (0..selection.n_items()).find(|&i| {
+                    selection
+                        .item(i)
+                        .and_downcast::<gio::FileInfo>()
+                        .is_some_and(|info| info.name() == name)
+                });
+                if let Some(position) = position {
+                    select_row(&column_view, position, focus);
+                }
+            });
+        }
+    }
+
+    /// Moves the cursor to the entry called `name`; false if there is none.
+    fn select_name(&self, name: &PathBuf) -> bool {
+        let Some(position) = self.position_of(name) else {
+            return false;
+        };
+        select_row(&self.column_view, position, self.active.get() && !self.is_searching());
+        true
+    }
+
+    fn position_of(&self, name: &PathBuf) -> Option<u32> {
+        (0..self.selection.n_items()).find(|&i| self.entry(i).is_some_and(|e| &e.name() == name))
+    }
+
+    /// Unmarks all files.
+    pub fn clear_marks(&self) {
+        self.mark_all(false);
     }
 
     /// Toggles the mark on the file at `position`.
@@ -402,12 +514,18 @@ impl Panel {
     }
 
     /// Shows `folder`; once loaded, the cursor goes to the entry named
-    /// `cursor_on` (or to the first entry).
+    /// `cursor_on` (or to the first row, ".." if the folder has a parent).
     fn open(&self, folder: &gio::File, cursor_on: Option<PathBuf>) {
         self.close_search();
         self.marked.marks.borrow_mut().clear();
         self.marked.show_all();
         self.cursor_target.replace(cursor_on);
+        let has_parent = folder.parent().is_some();
+        if has_parent && self.parent_row.n_items() == 0 {
+            self.parent_row.append(&parent_entry());
+        } else if !has_parent {
+            self.parent_row.remove_all();
+        }
         self.path_bar.set_location(folder);
         self.dir_list.set_file(Some(folder));
     }
@@ -438,8 +556,12 @@ impl Panel {
     }
 
     /// Opens the entry at `position`: folders in the panel, files with their
-    /// default app.
+    /// default app, ".." goes to the parent folder.
     fn activate(&self, position: u32) {
+        if self.is_parent_row(position) {
+            self.open_parent();
+            return;
+        }
         let Some(info) = self.entry(position) else {
             return;
         };
@@ -471,7 +593,7 @@ impl Panel {
 
     /// Opens the file under the cursor in the default text editor (F4).
     pub fn edit(&self) {
-        let Some(info) = self.selection.selected_item().and_downcast::<gio::FileInfo>() else {
+        let Some(info) = self.cursor_entry() else {
             return;
         };
         if info.file_type() == gio::FileType::Directory {
@@ -531,8 +653,19 @@ impl Panel {
         }
     }
 
+    /// The file at row `position`; None for the ".." row, which is not a file.
     fn entry(&self, position: u32) -> Option<gio::FileInfo> {
-        self.selection.item(position).and_downcast()
+        self.selection
+            .item(position)
+            .and_downcast::<gio::FileInfo>()
+            .filter(|info| !is_parent_entry(info))
+    }
+
+    fn is_parent_row(&self, position: u32) -> bool {
+        self.selection
+            .item(position)
+            .and_downcast::<gio::FileInfo>()
+            .is_some_and(|info| is_parent_entry(&info))
     }
 
     // --- Type-to-search ---
@@ -591,9 +724,9 @@ impl Panel {
             self.search_entry.remove_css_class("error");
             return;
         }
-        let names: Vec<String> = (0..self.selection.n_items())
-            .filter_map(|i| self.entry(i))
-            .map(|info| info.display_name().into())
+        // One name per row; ".." has none, so it never matches.
+        let names: Vec<Option<String>> = (0..self.selection.n_items())
+            .map(|i| self.entry(i).map(|info| info.display_name().into()))
             .collect();
         match find_match(&names, &query, jump) {
             Some(position) => {
@@ -610,6 +743,19 @@ impl Panel {
     }
 }
 
+/// Moves the cursor to row `position`, also taking the keyboard focus there
+/// with `focus`.
+fn select_row(column_view: &gtk::ColumnView, position: u32, focus: bool) {
+    let mut flags = gtk::ListScrollFlags::SELECT;
+    if focus {
+        flags |= gtk::ListScrollFlags::FOCUS;
+    }
+    column_view.scroll_to(position, None, flags, None);
+    if focus {
+        column_view.grab_focus();
+    }
+}
+
 /// Shows a short message on the window's toast overlay.
 fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Some(overlay) = widget
@@ -620,7 +766,23 @@ fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     }
 }
 
-fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
+/// The ".." row's entry: shown like a folder, but it has no
+/// "standard::file", so nothing that acts on files can pick it up.
+fn parent_entry() -> gio::FileInfo {
+    let info = gio::FileInfo::new();
+    info.set_name("..");
+    info.set_display_name("..");
+    info.set_file_type(gio::FileType::Directory);
+    info.set_icon(&gio::ThemedIcon::new("folder"));
+    info.set_attribute_boolean(PARENT_ENTRY, true);
+    info
+}
+
+fn is_parent_entry(info: &gio::FileInfo) -> bool {
+    info.boolean(PARENT_ENTRY)
+}
+
+pub fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast()
 }
 
@@ -696,16 +858,20 @@ enum Jump {
 
 /// The position of a name matching `query`, ignoring case. Names starting
 /// with the text are the matches; if there are none, names containing it
-/// are. `Next`/`Previous` go to the match after/before a position, wrapping
-/// around at the end.
-fn find_match(names: &[String], query: &str, jump: Jump) -> Option<usize> {
+/// are. Rows without a name (None) never match. `Next`/`Previous` go to the
+/// match after/before a position, wrapping around at the end.
+fn find_match(names: &[Option<String>], query: &str, jump: Jump) -> Option<usize> {
     let query = query.to_lowercase();
-    let lower: Vec<String> = names.iter().map(|name| name.to_lowercase()).collect();
-    let mut matches: Vec<usize> = (0..lower.len())
-        .filter(|&i| lower[i].starts_with(&query))
-        .collect();
+    let lower: Vec<Option<String>> =
+        names.iter().map(|name| name.as_ref().map(|n| n.to_lowercase())).collect();
+    let find = |test: &dyn Fn(&str) -> bool| -> Vec<usize> {
+        (0..lower.len())
+            .filter(|&i| lower[i].as_deref().is_some_and(test))
+            .collect()
+    };
+    let mut matches = find(&|name| name.starts_with(&query));
     if matches.is_empty() {
-        matches = (0..lower.len()).filter(|&i| lower[i].contains(&query)).collect();
+        matches = find(&|name| name.contains(&query));
     }
     match jump {
         Jump::First => matches.first().copied(),
@@ -915,8 +1081,8 @@ fn format_date(date: &glib::DateTime) -> String {
 mod tests {
     use super::*;
 
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    fn names(list: &[&str]) -> Vec<Option<String>> {
+        list.iter().map(|s| Some(s.to_string())).collect()
     }
 
     #[test]
@@ -952,6 +1118,29 @@ mod tests {
         assert_eq!(find_match(&list, "a", Jump::Previous(0)), Some(4));
         // Only "contains" matches: stepping uses those.
         assert_eq!(find_match(&list, "3", Jump::Next(0)), Some(4));
+    }
+
+    #[test]
+    fn search_skips_rows_without_a_name() {
+        // Row 0 is "..": never a match, not even for ".".
+        let mut list = names(&["a.txt", "b.txt"]);
+        list.insert(0, None);
+        assert_eq!(find_match(&list, ".", Jump::First), Some(1));
+        assert_eq!(find_match(&list, "a", Jump::First), Some(1));
+        assert_eq!(find_match(&list, "b", Jump::Next(0)), Some(2));
+        assert_eq!(find_match(&list, "a", Jump::Previous(1)), Some(1));
+        assert_eq!(find_match(&[None], "x", Jump::First), None);
+    }
+
+    #[test]
+    fn the_parent_entry_is_not_a_file() {
+        let parent = parent_entry();
+        assert!(is_parent_entry(&parent));
+        assert_eq!(parent.display_name(), "..");
+        assert!(is_dir(&parent));
+        assert!(entry_file(&parent).is_none());
+        assert!(entry_uri(&parent).is_none());
+        assert!(!is_parent_entry(&info("..", true, 0, 0)));
     }
 
     fn info(name: &str, dir: bool, size: i64, modified: u64) -> gio::FileInfo {

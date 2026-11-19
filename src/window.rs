@@ -8,15 +8,16 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::panel::Panel;
+use crate::panel::{Panel, entry_file};
 use crate::settings::{IconSize, Settings};
-use crate::{fkeybar, preferences};
+use crate::{dialogs, fkeybar, ops, preferences};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
 struct State {
     panels: [Rc<Panel>; 2],
     active: Cell<usize>,
     panels_box: gtk::Box,
+    toasts: adw::ToastOverlay,
     settings: RefCell<Settings>,
 }
 
@@ -81,19 +82,20 @@ pub fn build(app: &adw::Application) {
         .css_classes(["panels", "view"])
         .build();
 
+    let toast_overlay = adw::ToastOverlay::new();
+    toast_overlay.set_child(Some(&panels_box));
+
     let state = Rc::new(State {
         panels,
         active: Cell::new(0),
         panels_box: panels_box.clone(),
+        toasts: toast_overlay.clone(),
         settings: RefCell::new(settings),
     });
     for panel in &state.panels {
         panels_box.append(panel.widget());
     }
     state.apply_icon_size(state.settings.borrow().icon_size);
-
-    let toast_overlay = adw::ToastOverlay::new();
-    toast_overlay.set_child(Some(&panels_box));
 
     // Header bar like GNOME Files: centred title, primary menu on the right.
     // (A progress button for file operations will later be packed next to it.)
@@ -177,10 +179,10 @@ pub fn build(app: &adw::Application) {
     let window_weak = window.downgrade();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         // Dialogs live inside the window; leave their keys alone.
-        if window_weak
-            .upgrade()
-            .is_none_or(|window| window.visible_dialog().is_some())
-        {
+        let Some(window) = window_weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        if window.visible_dialog().is_some() {
             return glib::Propagation::Proceed;
         }
         let active = window_state.active.get();
@@ -226,6 +228,27 @@ pub fn build(app: &adw::Application) {
 
         if is_tab {
             window_state.activate(1 - active, true);
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+            panel.open_parent();
+            return glib::Propagation::Stop;
+        }
+        // The file operation keys. Handled here rather than as accelerators,
+        // so that they never fire while the search field or a dialog has the
+        // keys (where Delete edits text).
+        let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        let operation = match key {
+            gdk::Key::F2 if !shift => Some("rename"),
+            gdk::Key::F7 if !shift => Some("mkdir"),
+            gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete if shift => {
+                Some("delete-permanently")
+            }
+            gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete => Some("delete"),
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            let _ = WidgetExt::activate_action(&window, &format!("win.{operation}"), None);
             return glib::Propagation::Stop;
         }
         if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -349,9 +372,281 @@ fn add_window_actions(
         .build();
 
     window.add_action_entries([show_hidden, edit, terminal]);
+    add_file_actions(window, state);
     app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
     app.set_accels_for_action("win.edit", &["F4"]);
     app.set_accels_for_action("win.terminal", &["<Shift>F4"]);
+}
+
+// --- File operations (F2, F7, F8/Delete, Shift+F8/Shift+Delete) ---
+
+/// The file operation actions. They act on the active panel and do nothing
+/// while a dialog is open.
+fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
+    let entry = |name: &str, run: fn(&Rc<State>, &Rc<Panel>)| {
+        let state_weak = Rc::downgrade(state);
+        let window_weak = window.downgrade();
+        gio::ActionEntry::builder(name)
+            .activate(move |_, _, _| {
+                let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade())
+                else {
+                    return;
+                };
+                if window.visible_dialog().is_none() {
+                    let panel = state.panels[state.active.get()].clone();
+                    panel.close_search();
+                    run(&state, &panel);
+                }
+            })
+            .build()
+    };
+    window.add_action_entries([
+        entry("mkdir", new_folder),
+        entry("rename", rename),
+        entry("delete", move_to_trash),
+        entry("delete-permanently", |state, panel| {
+            delete_permanently(state, panel, panel.files_to_act_on(), false)
+        }),
+    ]);
+}
+
+impl State {
+    /// Shows `text` as it is (file names may contain "&" or "<").
+    fn toast(&self, text: &str) {
+        let toast = adw::Toast::new(text);
+        toast.set_use_markup(false);
+        self.toasts.add_toast(toast);
+    }
+
+    /// Shows `text` with an Undo button that runs `undo`.
+    fn toast_with_undo(&self, text: &str, undo: impl Fn() + 'static) {
+        let toast = adw::Toast::builder().title(text).button_label("_Undo").build();
+        toast.set_use_markup(false);
+        toast.connect_button_clicked(move |_| undo());
+        self.toasts.add_toast(toast);
+    }
+}
+
+/// The name to show for `file`.
+fn file_name(file: &gio::File) -> String {
+    file.basename()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file.parse_name().into())
+}
+
+/// Runs `then` with `panel` if it still shows `folder`.
+fn if_showing(panel: &Panel, folder: &Option<gio::File>, then: impl FnOnce(&Panel)) {
+    if let (Some(shown), Some(folder)) = (panel.folder(), folder)
+        && shown.equal(folder)
+    {
+        then(panel);
+    }
+}
+
+/// F7: asks for a name and creates that folder in the active panel.
+fn new_folder(state: &Rc<State>, panel: &Rc<Panel>) {
+    let Some(folder) = panel.folder() else {
+        return;
+    };
+    let (parent, existing) = (state.panels_box.clone(), panel.names());
+    let state = state.clone();
+    let panel = panel.clone();
+    dialogs::new_folder(&parent, existing, move |name| {
+        let (state, panel, folder) = (state.clone(), panel.clone(), folder.clone());
+        glib::spawn_future_local(async move {
+            match ops::make_folder(&folder, &name).await {
+                Ok(created) => if_showing(&panel, &Some(folder), |panel| {
+                    panel.put_cursor_on(created.basename().unwrap_or_default())
+                }),
+                Err(error) => {
+                    state.toast(&format!("Could not create “{name}”: {}", dialogs::reason(&error)))
+                }
+            }
+        });
+    });
+}
+
+/// F2: renames the file under the cursor (never the marked files).
+fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
+    let Some(info) = panel.cursor_entry() else {
+        return;
+    };
+    let Some(file) = entry_file(&info) else {
+        return;
+    };
+    let old = info.display_name().to_string();
+    let is_folder = info.file_type() == gio::FileType::Directory;
+    let (parent, existing) = (state.panels_box.clone(), panel.names());
+    let state = state.clone();
+    let panel = panel.clone();
+    dialogs::rename(&parent, &old.clone(), is_folder, existing, move |new| {
+        if new == old {
+            return;
+        }
+        let (state, panel, file, old) = (state.clone(), panel.clone(), file.clone(), old.clone());
+        glib::spawn_future_local(async move {
+            let renamed = match ops::rename(&file, &new).await {
+                Ok(renamed) => renamed,
+                Err(error) => {
+                    let reason = dialogs::reason(&error);
+                    return state.toast(&format!("Could not rename “{old}”: {reason}"));
+                }
+            };
+            let folder = renamed.parent();
+            if_showing(&panel, &folder, |panel| {
+                panel.put_cursor_on(renamed.basename().unwrap_or_default())
+            });
+            let state_weak = Rc::downgrade(&state);
+            let panel_weak = Rc::downgrade(&panel);
+            state.toast_with_undo(&dialogs::renamed(&old, &new), move || {
+                let (Some(state), Some(panel)) = (state_weak.upgrade(), panel_weak.upgrade())
+                else {
+                    return;
+                };
+                let (renamed, old, new, folder) =
+                    (renamed.clone(), old.clone(), new.clone(), folder.clone());
+                glib::spawn_future_local(async move {
+                    match ops::rename(&renamed, &old).await {
+                        Ok(back) => if_showing(&panel, &folder, |panel| {
+                            panel.put_cursor_on(back.basename().unwrap_or_default())
+                        }),
+                        Err(error) => state.toast(&format!(
+                            "Could not rename “{new}” back: {}",
+                            dialogs::reason(&error)
+                        )),
+                    }
+                });
+            });
+        });
+    });
+}
+
+/// F8, Delete: asks, then moves the marked files (or the one under the
+/// cursor) to the trash; the toast's Undo brings them back. In a location
+/// without a trash only the Delete Permanently question is asked instead,
+/// so there is never a second question.
+fn move_to_trash(state: &Rc<State>, panel: &Rc<Panel>) {
+    let files = panel.files_to_act_on();
+    if files.is_empty() {
+        return;
+    }
+    let state = state.clone();
+    let panel = panel.clone();
+    glib::spawn_future_local(async move {
+        if !ops::can_trash(&files).await {
+            return delete_permanently(&state, &panel, files, true);
+        }
+        let names: Vec<String> = files.iter().map(file_name).collect();
+        let parent = state.panels_box.clone();
+        dialogs::confirm_trash(&parent, &names, move || {
+            trash_files(&state, &panel, files.clone())
+        });
+    });
+}
+
+/// Moves `files` to the trash and offers Undo. Files that turn out to have
+/// no trash after all can be deleted permanently instead.
+fn trash_files(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
+    let folder = panel.folder();
+    let neighbour = panel.neighbour_after(&files);
+    let state = state.clone();
+    let panel = panel.clone();
+    glib::spawn_future_local(async move {
+        let outcome = ops::trash(&files).await;
+        // Nothing left (all failed, or the location has no trash): marks and
+        // cursor stay, for another try or the Delete Permanently dialog.
+        if !outcome.trashed.is_empty() {
+            if_showing(&panel, &folder, |panel| {
+                panel.clear_marks();
+                if let Some(name) = neighbour {
+                    panel.put_cursor_on(name);
+                }
+            });
+        }
+
+        let trashed_names: Vec<String> =
+            outcome.trashed.iter().map(|item| file_name(&item.original)).collect();
+        let failed_names: Vec<String> =
+            outcome.failed.iter().map(|(file, _)| file_name(file)).collect();
+        let reason =
+            outcome.failed.first().map(|(_, error)| dialogs::reason(error)).unwrap_or_default();
+        let text = dialogs::trashed(&trashed_names, &failed_names, &reason);
+        if !outcome.trashed.is_empty() {
+            let state_weak = Rc::downgrade(&state);
+            let panel_weak = Rc::downgrade(&panel);
+            let trashed = outcome.trashed;
+            state.toast_with_undo(&text, move || {
+                if let (Some(state), Some(panel)) = (state_weak.upgrade(), panel_weak.upgrade()) {
+                    restore(state, panel, trashed.clone());
+                }
+            });
+        } else if !outcome.failed.is_empty() {
+            state.toast(&text);
+        }
+
+        if !outcome.unsupported.is_empty() {
+            delete_permanently(&state, &panel, outcome.unsupported, true);
+        }
+    });
+}
+
+/// Undo of a trash operation: moves the files back from the trash.
+fn restore(state: Rc<State>, panel: Rc<Panel>, trashed: Vec<ops::Trashed>) {
+    glib::spawn_future_local(async move {
+        let (restored, failed) = match ops::restore(&trashed).await {
+            Ok(result) => result,
+            Err(error) => {
+                let reason = dialogs::reason(&error);
+                return state.toast(&format!("Could not look into the trash: {reason}"));
+            }
+        };
+        if let Some(first) = restored.first() {
+            if_showing(&panel, &first.parent(), |panel| {
+                panel.put_cursor_on(first.basename().unwrap_or_default())
+            });
+        }
+        if let Some((_, error)) = failed.first() {
+            let names: Vec<String> = failed.iter().map(|(file, _)| file_name(file)).collect();
+            let reason = dialogs::reason(error);
+            state.toast(&dialogs::failed(&names, "restore", "restored", &reason));
+        }
+    });
+}
+
+/// Shift+F8, Shift+Delete (and trash-less locations): deletes `files` for
+/// good, folders with their contents, after asking. There is no undo.
+fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>, no_trash: bool) {
+    if files.is_empty() {
+        return;
+    }
+    let names: Vec<String> = files.iter().map(file_name).collect();
+    let parent = state.panels_box.clone();
+    let state = state.clone();
+    let panel = panel.clone();
+    dialogs::confirm_delete(&parent, &names, no_trash, move || {
+        let (state, panel, files) = (state.clone(), panel.clone(), files.clone());
+        let folder = panel.folder();
+        let neighbour = panel.neighbour_after(&files);
+        glib::spawn_future_local(async move {
+            let mut failed = Vec::new();
+            for file in &files {
+                if let Err(error) = ops::delete_recursively(file).await {
+                    failed.push((file_name(file), error));
+                }
+            }
+            if_showing(&panel, &folder, |panel| {
+                panel.clear_marks();
+                if let Some(name) = neighbour {
+                    panel.put_cursor_on(name);
+                }
+            });
+            if let Some((_, error)) = failed.first() {
+                let reason = dialogs::reason(error);
+                let names: Vec<String> = failed.iter().map(|(name, _)| name.clone()).collect();
+                state.toast(&dialogs::failed(&names, "delete", "deleted", &reason));
+            }
+        });
+    });
 }
 
 const DEVELOPER: &str = "Sebastian Knopp";
@@ -458,7 +753,11 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     ));
 
     let files = adw::ShortcutsSection::new(Some("Files"));
+    files.add(adw::ShortcutsItem::new("Rename the file under the cursor", "F2"));
     files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));
+    files.add(adw::ShortcutsItem::new("New folder", "F7"));
+    files.add(adw::ShortcutsItem::new("Move to the trash", "F8 Delete"));
+    files.add(adw::ShortcutsItem::new("Delete permanently", "<Shift>F8 <Shift>Delete"));
     files.add(adw::ShortcutsItem::new("Open a terminal here", "<Shift>F4"));
 
     let general = adw::ShortcutsSection::new(Some("General"));
