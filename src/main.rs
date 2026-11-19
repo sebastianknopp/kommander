@@ -13,6 +13,7 @@ mod preferences;
 mod preview;
 mod progress;
 mod settings;
+mod sidebar;
 mod window;
 
 use adw::prelude::*;

@@ -329,6 +329,45 @@ pub fn quit_question(running: usize) -> String {
     }
 }
 
+// --- Favourites (the sidebar) ---
+
+/// The toast after adding favourites: "“Work” added to favourites",
+/// "3 folders added to favourites".
+pub fn favourites_added(names: &[String]) -> String {
+    match names {
+        [name] => format!("“{name}” added to favourites"),
+        _ => format!("{} folders added to favourites", names.len()),
+    }
+}
+
+/// The toast when Ctrl+D adds a folder that is a favourite already.
+pub fn favourite_exists(name: &str) -> String {
+    format!("“{name}” is already a favourite")
+}
+
+/// The toast after removing a favourite (it has an Undo button).
+pub fn favourite_removed(name: &str) -> String {
+    format!("“{name}” removed from favourites")
+}
+
+/// The toast when the favourites could not be written to the bookmarks file.
+pub fn favourites_not_saved(reason: &str) -> String {
+    format!("Could not save favourites: {reason}")
+}
+
+/// The toast when the bookmarks file exists but could not be read: changing
+/// the favourites then would overwrite what could not be read.
+pub const FAVOURITES_UNREADABLE: &str =
+    "Favourites can’t be changed, because the bookmarks file could not be read";
+
+/// The toast when a folder is dropped onto itself or one of its subfolders.
+pub const INTO_ITSELF: &str = "A folder can’t be put inside itself";
+
+/// The toast when files from another app, in a folder neither panel shows,
+/// are dropped onto Trash (the trash question and its Undo work on panels).
+pub const TRASH_DROP_FROM_PANELS_ONLY: &str =
+    "Only files shown in a panel can be dropped onto the trash";
+
 // --- Dialogs ---
 
 /// Asks for the name of a new folder. `existing` are the names already in
@@ -910,6 +949,26 @@ mod tests {
 
         assert_eq!(quit_question(1), "An operation is still running. Stop it and quit?");
         assert!(quit_question(2).starts_with("2 operations are"));
+    }
+
+    #[test]
+    fn favourites_messages() {
+        let one = ["Work".to_string()];
+        let three = ["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(favourites_added(&one), "“Work” added to favourites");
+        assert_eq!(favourites_added(&three), "3 folders added to favourites");
+        assert_eq!(favourite_exists("My Files"), "“My Files” is already a favourite");
+        assert_eq!(favourite_removed("Work"), "“Work” removed from favourites");
+        assert_eq!(
+            favourites_not_saved("Permission denied"),
+            "Could not save favourites: Permission denied"
+        );
+        // Drives that can't be opened, ejected or unmounted use `failed`.
+        let stick = ["USB Stick".to_string()];
+        assert_eq!(
+            failed(&stick, "eject", "ejected", "Device busy"),
+            "Could not eject “USB Stick”: Device busy"
+        );
     }
 
     #[test]

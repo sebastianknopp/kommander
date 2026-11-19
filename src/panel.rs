@@ -585,6 +585,29 @@ impl Panel {
         }
     }
 
+    /// Up on the first row jumps to the last, Down on the last row to the
+    /// first. Returns false (and does nothing) anywhere else, so the list's
+    /// own Up and Down take over.
+    pub fn wrap_cursor(&self, down: bool) -> bool {
+        let count = self.selection.n_items();
+        let position = self.selection.selected();
+        if count < 2 || position == gtk::INVALID_LIST_POSITION {
+            return false;
+        }
+        let target = match (down, position) {
+            (true, last) if last + 1 == count => 0,
+            (false, 0) => count - 1,
+            _ => return false,
+        };
+        self.column_view.scroll_to(
+            target,
+            None,
+            gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
+            None,
+        );
+        true
+    }
+
     /// Marks every file in the panel (Ctrl+A), or none (Ctrl+Shift+A).
     pub fn mark_all(&self, mark: bool) {
         {
@@ -630,6 +653,16 @@ impl Panel {
         }
         self.path_bar.set_location(folder);
         self.dir_list.set_file(Some(folder));
+    }
+
+    /// Goes to `folder` (from the favourites sidebar), cursor on the first row.
+    pub fn go_to(&self, folder: &gio::File) {
+        self.open(folder, None);
+    }
+
+    /// Calls `f` whenever the panel goes to another folder.
+    pub fn connect_folder_changed(&self, f: impl Fn() + 'static) {
+        self.dir_list.connect_file_notify(move |_| f());
     }
 
     /// Goes to the parent folder, with the cursor on the folder we came from.
@@ -887,7 +920,7 @@ impl Panel {
                 true
             }
             Err(Refusal::IntoItself) => {
-                toast(&self.root, "A folder can’t be put inside itself");
+                toast(&self.root, crate::dialogs::INTO_ITSELF);
                 false
             }
             Err(Refusal::AlreadyThere | Refusal::Nothing) => false,
@@ -933,23 +966,7 @@ impl Panel {
             DropCheck::IntoItself => return Err(Refusal::IntoItself),
         }
 
-        let kind = with_offer(&drop, |offer| {
-            let same_fs = files.first().is_some_and(|first| {
-                *offer
-                    .same_fs
-                    .entry(landing.dest.uri().into())
-                    .or_insert_with(|| dnd::same_file_system(first, &landing.dest))
-            });
-            // Ctrl and Shift as held now (this window has the keyboard
-            // while dragging between its panels).
-            let modifiers = drop
-                .device()
-                .seat()
-                .keyboard()
-                .map_or(gdk::ModifierType::empty(), |keyboard| keyboard.modifier_state());
-            dnd::drop_kind(offer.allowed, modifiers, same_fs)
-        })
-        .ok_or(Refusal::Nothing)?;
+        let kind = kind_for_drop(&drop, &files, &landing.dest).ok_or(Refusal::Nothing)?;
 
         let row = row.filter(|_| landing.on_row).and_then(|(_, picked)| row_widget(&picked));
         Ok(DropPlan { files, dest: landing.dest, kind, row })
@@ -1075,8 +1092,8 @@ enum Refusal {
     IntoItself,
 }
 
-/// What is known about the drag over the window. Both panels see the same
-/// drop, and once a panel has said whether it would copy or move, the
+/// What is known about the drag over the window. Both panels (and the
+/// favourites sidebar) see the same drop, and once a panel has said whether it would copy or move, the
 /// system narrows what the drop allows down to that; so what the other app
 /// allows is remembered from when the drag came in. Whether the files and a
 /// folder share a file system is only looked up once per drag.
@@ -1105,6 +1122,34 @@ fn with_offer<T>(drop: &gdk::Drop, f: impl FnOnce(&mut Offer) -> T) -> T {
         };
         f(offer)
     })
+}
+
+/// Whether `files` dropped into `dest` now are copied or moved: the rule in
+/// dnd.rs, with what the other app allows (see `Offer`), Ctrl and Shift as
+/// held now (this window has the keyboard while dragging between its
+/// panels and the sidebar) and whether `dest` shares the files' file system.
+/// Also used by the favourites sidebar, which sees the same drags.
+pub fn kind_for_drop(drop: &gdk::Drop, files: &[gio::File], dest: &gio::File) -> Option<Kind> {
+    with_offer(drop, |offer| {
+        let same_fs = files.first().is_some_and(|first| {
+            *offer
+                .same_fs
+                .entry(dest.uri().into())
+                .or_insert_with(|| dnd::same_file_system(first, dest))
+        });
+        let modifiers = drop
+            .device()
+            .seat()
+            .keyboard()
+            .map_or(gdk::ModifierType::empty(), |keyboard| keyboard.modifier_state());
+        dnd::drop_kind(offer.allowed, modifiers, same_fs)
+    })
+}
+
+/// What the app the dragged files come from allows (copy, move), as known
+/// from when the drag came in (see `Offer`).
+pub fn offered_actions(drop: &gdk::Drop) -> gdk::DragAction {
+    with_offer(drop, |offer| offer.allowed)
 }
 
 /// The rows a drag starting on row `pressed` carries, given each row's URI

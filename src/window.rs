@@ -1,5 +1,5 @@
-// The main window: header bar, toast overlay, the two panels and the
-// function-key bar, plus the app menu's actions.
+// The main window: header bar, toast overlay, the favourites sidebar, the
+// two panels and the function-key bar, plus the app menu's actions.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::cell::{Cell, RefCell};
@@ -17,6 +17,7 @@ use crate::panel::{Panel, entry_file};
 use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
 use crate::preview::{self, Preview};
+use crate::sidebar::Sidebar;
 use crate::{dialogs, fkeybar, ops, preferences};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
@@ -31,6 +32,8 @@ struct State {
     /// The half the preview covers at the moment, if it is open.
     previewing: Cell<Option<usize>>,
     toasts: adw::ToastOverlay,
+    /// The favourites sidebar on the left (F1).
+    sidebar: Rc<Sidebar>,
     settings: RefCell<Settings>,
     /// Copy and move: the worker queue, the header bar button listing the
     /// operations (with the progress strip above the function keys), and
@@ -58,6 +61,7 @@ impl State {
         for (i, panel) in self.panels.iter().enumerate() {
             panel.set_active(i == index);
         }
+        self.sidebar.set_current(self.panels[index].folder());
         if focus {
             self.panels[index].focus();
         }
@@ -118,6 +122,14 @@ impl State {
         }
     }
 
+    /// Back from the sidebar to the active panel (unless a dialog has the keys).
+    fn focus_panel(&self) {
+        let window = self.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+        if !window.is_some_and(|window| window.visible_dialog().is_some()) {
+            self.panels[self.active.get()].focus();
+        }
+    }
+
     /// Saves the settings, together with each panel's folder and sort order.
     fn save_settings(&self) {
         let mut settings = self.settings.borrow_mut();
@@ -166,8 +178,15 @@ pub fn build(app: &adw::Application) {
         slot
     });
 
+    // The favourites sidebar left of both panels; hidden, it takes no room.
+    let sidebar = Sidebar::new(settings.show_favourites);
+    panels_box.set_hexpand(true);
+    let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    main_box.append(sidebar.widget());
+    main_box.append(&panels_box);
+
     let toast_overlay = adw::ToastOverlay::new();
-    toast_overlay.set_child(Some(&panels_box));
+    toast_overlay.set_child(Some(&main_box));
 
     let state = Rc::new_cyclic(|state_weak: &std::rc::Weak<State>| {
         let on_event = state_weak.clone();
@@ -180,6 +199,7 @@ pub fn build(app: &adw::Application) {
             previews,
             previewing: Cell::new(None),
             toasts: toast_overlay.clone(),
+            sidebar,
             settings: RefCell::new(settings),
             jobs: Jobs::new(move |event| {
                 if let Some(state) = on_event.upgrade() {
@@ -209,10 +229,16 @@ pub fn build(app: &adw::Application) {
         });
     }
 
+    connect_sidebar(&state);
+
     // Header bar like GNOME Files: centred title, primary menu on the right,
     // and left of it the file operations button while copies or moves run.
     let menu = gio::Menu::new();
     let view_section = gio::Menu::new();
+    let favourites_item = gio::MenuItem::new(Some("Show _Favourites"), Some("win.favourites"));
+    // F1 is caught by the key handler below, not an accelerator; shown anyway.
+    favourites_item.set_attribute_value("accel", Some(&"F1".to_variant()));
+    view_section.append_item(&favourites_item);
     view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
     menu.append_section(None, &view_section);
     let app_section = gio::Menu::new();
@@ -367,6 +393,21 @@ pub fn build(app: &adw::Application) {
             return glib::Propagation::Stop;
         }
 
+        // F1 shows or hides the favourites sidebar, from anywhere (the
+        // search field closes). Not an accelerator, so that it can't fire
+        // while a dialog is open.
+        if key == gdk::Key::F1 && !modifiers.intersects(any_modifier()) {
+            panel.close_search();
+            let _ = WidgetExt::activate_action(&window, "win.favourites", None);
+            return glib::Propagation::Stop;
+        }
+
+        // While the keyboard is in the sidebar, its keys are its own: none
+        // of the panel's keys below may act on the panel's files from there.
+        if window_state.sidebar.has_focus() {
+            return sidebar_key(&window_state, key, modifiers);
+        }
+
         // Ctrl+A marks all files, Ctrl+Shift+A none. (Caught here because
         // the list would otherwise take Ctrl+A as its own "select all".)
         // While searching, Ctrl+A selects the search text instead.
@@ -414,6 +455,18 @@ pub fn build(app: &adw::Application) {
         if key == gdk::Key::Escape && window_state.previewing.get().is_some() {
             window_state.close_preview();
             return glib::Propagation::Stop;
+        }
+        // At the top or bottom of the list the cursor comes out on the other
+        // side; everywhere else the list moves it itself.
+        if !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+            let wrapped = match key {
+                gdk::Key::Down | gdk::Key::KP_Down => panel.wrap_cursor(true),
+                gdk::Key::Up | gdk::Key::KP_Up => panel.wrap_cursor(false),
+                _ => false,
+            };
+            if wrapped {
+                return glib::Propagation::Stop;
+            }
         }
         if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
             panel.open_parent();
@@ -472,6 +525,97 @@ pub fn build(app: &adw::Application) {
 
     window.present();
     state.activate(0, true);
+}
+
+/// Ctrl, Alt, Super and Shift.
+fn any_modifier() -> gdk::ModifierType {
+    gdk::ModifierType::CONTROL_MASK
+        | gdk::ModifierType::ALT_MASK
+        | gdk::ModifierType::SUPER_MASK
+        | gdk::ModifierType::SHIFT_MASK
+}
+
+/// A key pressed while the focus is in the favourites sidebar. Up, Down,
+/// Home, End and Enter go to the list itself; Escape and Tab go back to the panel; Delete
+/// removes a favourite. The panel's own keys are swallowed, so that they
+/// can't act on files the user doesn't see the cursor on.
+fn sidebar_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+    use gdk::Key;
+    let ctrl_alt = modifiers.intersects(
+        gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK,
+    );
+    let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+    match key {
+        Key::Tab | Key::ISO_Left_Tab | Key::KP_Tab | Key::Escape if !ctrl_alt => state.focus_panel(),
+        Key::Delete | Key::KP_Delete if !ctrl_alt && !shift => state.sidebar.remove_focused(),
+        Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6 | Key::F7 | Key::F8 => {}
+        Key::Delete | Key::KP_Delete | Key::Insert | Key::KP_Insert | Key::BackSpace => {}
+        // The list would take Space as Enter and hand the keys back to the
+        // panel, where the next Space marks a file; only Enter goes places.
+        Key::space | Key::KP_Space => {}
+        // Ctrl+A would mark all files in the panel.
+        _ if ctrl_alt && key.to_lower() == Key::a => {}
+        // The list's own keys, and accelerators such as Ctrl+D and Ctrl+H.
+        _ => return glib::Propagation::Proceed,
+    }
+    glib::Propagation::Stop
+}
+
+/// Connects the favourites sidebar: its entries send the active panel
+/// there, it follows the active panel's folder, files dropped onto it go
+/// the same way as files dropped onto a panel, and panels showing a drive
+/// that goes away go home.
+fn connect_sidebar(state: &Rc<State>) {
+    let state_weak = Rc::downgrade(state);
+    state.sidebar.connect_open(move |folder| {
+        let Some(state) = state_weak.upgrade() else {
+            return;
+        };
+        let panel = &state.panels[state.active.get()];
+        // Already there: the cursor and marks stay as they are.
+        if !panel.folder().is_some_and(|shown| shown.equal(&folder)) {
+            panel.go_to(&folder);
+        }
+        state.focus_panel();
+    });
+
+    for (index, panel) in state.panels.iter().enumerate() {
+        let state_weak = Rc::downgrade(state);
+        panel.connect_folder_changed(move || {
+            if let Some(state) = state_weak.upgrade()
+                && state.active.get() == index
+            {
+                state.sidebar.set_current(state.panels[index].folder());
+            }
+        });
+    }
+
+    let state_weak = Rc::downgrade(state);
+    state.sidebar.connect_files_dropped(move |sources, dest_dir, kind| {
+        if let Some(state) = state_weak.upgrade() {
+            files_dropped(&state, sources, dest_dir, kind);
+        }
+    });
+
+    let state_weak = Rc::downgrade(state);
+    state.sidebar.connect_trash_dropped(move |sources| {
+        if let Some(state) = state_weak.upgrade() {
+            trash_dropped(&state, sources);
+        }
+    });
+
+    let state_weak = Rc::downgrade(state);
+    state.sidebar.connect_location_gone(move |root| {
+        let Some(state) = state_weak.upgrade() else {
+            return;
+        };
+        let home = gio::File::for_path(glib::home_dir());
+        for panel in &state.panels {
+            if panel.folder().is_some_and(|folder| folder.equal(&root) || folder.has_prefix(&root)) {
+                panel.go_to(&home);
+            }
+        }
+    });
 }
 
 /// The primary menu's actions. They belong to the application (GNOME
@@ -559,11 +703,14 @@ fn add_window_actions(
         })
         .build();
 
-    // F4: open the file under the cursor in the text editor.
+    // F4: open the file under the cursor in the text editor. (Not from the
+    // sidebar, where the panel's cursor is out of sight.)
     let state_weak = Rc::downgrade(state);
     let edit = gio::ActionEntry::builder("edit")
         .activate(move |_, _, _| {
-            if let Some(state) = state_weak.upgrade() {
+            if let Some(state) = state_weak.upgrade()
+                && !state.sidebar.has_focus()
+            {
                 state.panels[state.active.get()].edit();
             }
         })
@@ -573,15 +720,60 @@ fn add_window_actions(
     let state_weak = Rc::downgrade(state);
     let terminal = gio::ActionEntry::builder("terminal")
         .activate(move |_, _, _| {
-            if let Some(state) = state_weak.upgrade() {
+            if let Some(state) = state_weak.upgrade()
+                && !state.sidebar.has_focus()
+            {
                 state.panels[state.active.get()].open_terminal();
             }
         })
         .build();
 
-    window.add_action_entries([show_hidden, edit, terminal]);
+    // F1 (caught in the key handler) or the menu: show or hide the
+    // favourites sidebar. Shown, it takes the focus; hidden, the panel does.
+    let state_weak = Rc::downgrade(state);
+    let window_weak = window.downgrade();
+    let favourites = gio::ActionEntry::builder("favourites")
+        .state(state.settings.borrow().show_favourites.to_variant())
+        .activate(move |_, action, _| {
+            let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            if window.visible_dialog().is_some() {
+                return;
+            }
+            let show = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            action.set_state(&show.to_variant());
+            state.sidebar.set_shown(show);
+            if show {
+                state.sidebar.focus_in();
+            } else {
+                state.focus_panel();
+            }
+            state.settings.borrow_mut().show_favourites = show;
+            state.save_settings();
+        })
+        .build();
+
+    // Ctrl+D: the active panel's folder becomes a favourite (as in GNOME Files).
+    let state_weak = Rc::downgrade(state);
+    let window_weak = window.downgrade();
+    let add_favourite = gio::ActionEntry::builder("add-favourite")
+        .activate(move |_, _, _| {
+            let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            if window.visible_dialog().is_none()
+                && let Some(folder) = state.panels[state.active.get()].folder()
+            {
+                state.sidebar.add_folder(&folder);
+            }
+        })
+        .build();
+
+    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite]);
     add_file_actions(window, state);
     app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
+    app.set_accels_for_action("win.add-favourite", &["<Control>d"]);
     app.set_accels_for_action("win.edit", &["F4"]);
     app.set_accels_for_action("win.terminal", &["<Shift>F4"]);
 }
@@ -600,7 +792,7 @@ fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
                 else {
                     return;
                 };
-                if window.visible_dialog().is_none() {
+                if window.visible_dialog().is_none() && !state.sidebar.has_focus() {
                     let panel = state.panels[state.active.get()].clone();
                     panel.close_search();
                     run(&state, &panel);
@@ -737,7 +929,11 @@ fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
 /// without a trash only the Delete Permanently question is asked instead,
 /// so there is never a second question.
 fn move_to_trash(state: &Rc<State>, panel: &Rc<Panel>) {
-    let files = panel.files_to_act_on();
+    ask_to_trash(state, panel, panel.files_to_act_on());
+}
+
+/// Asks, then moves `files`, shown in `panel`, to the trash (see above).
+fn ask_to_trash(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
     if files.is_empty() {
         return;
     }
@@ -907,17 +1103,35 @@ fn files_dropped(state: &Rc<State>, sources: Vec<gio::File>, dest_dir: gio::File
     if window.is_some_and(|window| window.visible_dialog().is_some()) {
         return;
     }
-    // The panel the drag started in; for files from another app, a panel
-    // that shows their folder (if any).
+    let origin = origin_panel(state, &sources);
+    confirm_transfer(state, origin, kind, sources, dest_dir);
+}
+
+/// The panel dragged `sources` come from: the one the drag started in; for
+/// files from another app, a panel that shows their folder (if any).
+fn origin_panel(state: &State, sources: &[gio::File]) -> Option<Rc<Panel>> {
     let parent = sources.first().and_then(|file| file.parent());
     let shows_sources = |panel: &&Rc<Panel>| {
         panel.folder().zip(parent.as_ref()).is_some_and(|(folder, parent)| folder.equal(parent))
     };
-    let origin = (state.panels.iter())
+    (state.panels.iter())
         .find(|panel| panel.is_dragging() && shows_sources(panel))
         .or_else(|| state.panels.iter().find(shows_sources))
-        .cloned();
-    confirm_transfer(state, origin, kind, sources, dest_dir);
+        .cloned()
+}
+
+/// Files dropped onto Trash in the sidebar: the same question and Undo as
+/// F8, for the panel they come from. (Both work on a panel, so files from
+/// another app's folder that no panel shows are turned away.)
+fn trash_dropped(state: &Rc<State>, sources: Vec<gio::File>) {
+    let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+    if window.is_some_and(|window| window.visible_dialog().is_some()) {
+        return;
+    }
+    match origin_panel(state, &sources) {
+        Some(panel) => ask_to_trash(state, &panel, sources),
+        None => state.toast(dialogs::TRASH_DROP_FROM_PANELS_ONLY),
+    }
 }
 
 /// Asks, then copies or moves `sources` into `dest_dir`. `origin` is the
@@ -1156,6 +1370,14 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
 
+    let favourites = adw::ShortcutsSection::new(Some("Favourites"));
+    favourites.add(adw::ShortcutsItem::new("Show or hide the favourites", "F1"));
+    favourites.add(adw::ShortcutsItem::new("Add the current folder to the favourites", "<Control>d"));
+    favourites.add(adw::ShortcutsItem::new("Move through the favourites", "Up Down"));
+    favourites.add(adw::ShortcutsItem::new("Go there in the active panel", "Return"));
+    favourites.add(adw::ShortcutsItem::new("Back to the panel", "Escape Tab"));
+    favourites.add(adw::ShortcutsItem::new("Remove the favourite", "Delete"));
+
     let search = adw::ShortcutsSection::new(Some("Jump to Name"));
     search.add(adw::ShortcutsItem::new("Start by typing any letter", "a...z"));
     search.add(adw::ShortcutsItem::new("Previous or next match", "Up Down"));
@@ -1195,6 +1417,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
 
     let dialog = adw::ShortcutsDialog::new();
     dialog.add(panels);
+    dialog.add(favourites);
     dialog.add(search);
     dialog.add(marking);
     dialog.add(files);

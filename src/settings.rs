@@ -83,6 +83,8 @@ pub struct Settings {
     pub folders: [Option<String>; 2],
     /// F3 opens GNOME's previewer window instead of the opposite panel.
     pub preview_in_window: bool,
+    /// The favourites sidebar (F1) is shown.
+    pub show_favourites: bool,
 }
 
 impl Settings {
@@ -134,6 +136,7 @@ impl Settings {
             folders,
             preview_in_window: boolean("preview-in-window")
                 .unwrap_or(defaults.preview_in_window),
+            show_favourites: boolean("show-favourites").unwrap_or(defaults.show_favourites),
         }
     }
 
@@ -142,6 +145,7 @@ impl Settings {
         file.set_string(GROUP, "icon-size", self.icon_size.as_str());
         file.set_boolean(GROUP, "show-hidden", self.show_hidden);
         file.set_boolean(GROUP, "preview-in-window", self.preview_in_window);
+        file.set_boolean(GROUP, "show-favourites", self.show_favourites);
         for (i, panel) in PANEL_KEYS.iter().enumerate() {
             let sort = self.sort[i];
             file.set_string(GROUP, &format!("{panel}-sort"), sort.column.as_str());
@@ -179,6 +183,7 @@ mod tests {
             ],
             folders: [Some("file:///tmp/a%20b".into()), None],
             preview_in_window: true,
+            show_favourites: true,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
@@ -190,7 +195,7 @@ mod tests {
     fn broken_values_fall_back_to_defaults() {
         let file = glib::KeyFile::new();
         file.load_from_data(
-            "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\n",
+            "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();

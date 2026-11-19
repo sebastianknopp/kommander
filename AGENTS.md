@@ -53,7 +53,8 @@ Files:
 Module map (`src/`):
 - `main.rs` — app start-up: application ID, CSS, icon.
 - `window.rs` — main window, header bar, menus, all actions and key
-  bindings, the shortcuts and About dialogs; wires panels, preview and jobs.
+  bindings, the shortcuts and About dialogs; wires panels, sidebar,
+  preview and jobs.
 - `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
 - `pathbar.rs` — the breadcrumbs.
@@ -73,6 +74,11 @@ Module map (`src/`):
   only from local files, because GTK's media classes make GStreamer 1.28
   abort on MP3 files (see the file's header comment). Do not move sound back
   to GtkMediaFile without testing an .mp3 with an ID3 tag.
+- `sidebar.rs` — the favourites sidebar (F1): Home, Trash, the GTK
+  bookmarks file (`<config dir>/gtk-3.0/bookmarks`, shared with GNOME Files;
+  read, watched and written back) and the drives from GIO's volume monitor;
+  dropping onto it and reordering (rules in `dnd.rs`). Its keys are sorted
+  out in `window.rs` (`sidebar_key`).
 - `preferences.rs` — the Preferences dialog.
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file).
 
@@ -118,4 +124,8 @@ The window is then visible in a browser at http://127.0.0.1:8085/ (port
 8080 plus the display number); a headless browser (Playwright) can press keys,
 click and take screenshots. Known limits of Broadway: it crashes on drag and
 drop, when the preview closes, and sometimes when several rows share an
-icon. Test those parts on the real desktop only with the owner's consent.
+icon (in the sidebar too: give test bookmarks varied icons), and its
+browser client stops drawing after the sidebar slides out (reconnect).
+The private session has no drives; gvfs's `localtest:///` backend, mounted
+inside it, stands in for one. Test those parts on the real desktop only
+with the owner's consent.

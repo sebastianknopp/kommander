@@ -10,20 +10,22 @@
 
 /* Path strip above each file list, holding the breadcrumbs.
  * Inactive panel: flat with dimmed text. Active panel: accent-tinted strip
- * with full-strength text, so the active side reads at a glance. */
+ * with full-strength text and an orange line under it, so the active side
+ * reads at a glance. The orange is libadwaita's own palette colour. */
 .panel .path-strip {
   --strip-bg-color: var(--view-bg-color);
   background-color: var(--strip-bg-color);
-  padding: 3px 12px;
+  /* 2px less below, made up for by the thicker line: same height as before. */
+  padding: 3px 12px 1px 12px;
   font-weight: bold;
   color: color-mix(in srgb, var(--window-fg-color) 55%, transparent);
-  border-bottom: 1px solid transparent;
+  border-bottom: 3px solid transparent;
 }
 
 .panel.active .path-strip {
   color: var(--window-fg-color);
   --strip-bg-color: color-mix(in srgb, var(--accent-color) 22%, var(--view-bg-color));
-  border-bottom-color: color-mix(in srgb, var(--accent-color) 40%, var(--view-bg-color));
+  border-bottom-color: var(--orange-3);
 }
 
 /* Breadcrumb buttons, after Nautilus's path bar: flat, bold, earlier
@@ -152,7 +154,7 @@
 /* Cursor row: accent colour in the active panel, neutral grey elsewhere
  * (Nautilus uses the same grey trick for its whole list view). */
 .panel:not(.active) columnview > listview {
-  --accent-bg-color: color-mix(in srgb, var(--window-fg-color) 45%, var(--view-bg-color));
+  --accent-bg-color: color-mix(in srgb, var(--window-fg-color) 22%, var(--view-bg-color));
   --accent-color: var(--window-fg-color);
 }
 
@@ -194,6 +196,46 @@
 .panel columnview > listview > row.drop-target:not(:selected),
 .panel columnview > listview > row.drop-target:not(:selected):hover {
   background-color: color-mix(in srgb, var(--drop-color) 10%, transparent);
+}
+
+/* --- Favourites sidebar (F1), after Nautilus's sidebar --- */
+
+/* The sidebar colours of libadwaita's split views, with the same line on
+ * its right. */
+.favourites {
+  background-color: var(--sidebar-bg-color);
+  color: var(--sidebar-fg-color);
+  border-right: 1px solid var(--sidebar-border-color);
+}
+
+.favourites list {
+  background: none;
+}
+
+/* The lines between Home and Trash, the favourites and the drives. */
+.favourites list > separator {
+  margin: 6px 12px;
+}
+
+.favourites .eject-button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
+/* Dropping files onto an entry: highlighted as a panel's drop target. */
+.favourites row.drop-target {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
+  background-color: color-mix(in srgb, var(--accent-bg-color) 10%, transparent);
+}
+
+/* Dropping folders between favourites (or moving one): the insertion line. */
+.favourites row.drop-before {
+  box-shadow: inset 0 2px var(--accent-bg-color);
+}
+
+.favourites row.drop-after {
+  box-shadow: inset 0 -2px var(--accent-bg-color);
 }
 
 /* The number of files on the picture that follows the pointer. */

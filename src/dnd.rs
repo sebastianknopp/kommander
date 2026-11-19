@@ -5,6 +5,11 @@
 // The copy-or-move rule follows Nautilus (GPL-3.0-or-later): files are
 // moved within one file system and copied to another; Ctrl forces a copy,
 // Shift a move; whatever the other app allows wins over both.
+//
+// The favourites sidebar follows Nautilus's sidebar too: folders dropped
+// near the edge between two favourites become new favourites there; files
+// dropped onto the middle of an entry go into its folder; favourites are
+// reordered by dragging them.
 
 use gtk::prelude::*;
 use gtk::{gdk, gio};
@@ -135,6 +140,95 @@ pub fn same_file_system(a: &gio::File, b: &gio::File) -> bool {
     }
 }
 
+// --- The favourites sidebar ---
+
+/// What a sidebar row is, as far as drops care.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarRow {
+    /// A fixed entry (Home) other than the last.
+    Fixed,
+    /// The last fixed entry (Trash): its lower edge is where the
+    /// favourites start.
+    LastFixed,
+    /// The favourite at this index.
+    Favourite(usize),
+    /// The first drive: its upper edge is where the favourites end.
+    FirstDrive,
+    /// Any other drive.
+    Drive,
+}
+
+/// What dropping files on a sidebar row does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SidebarDrop {
+    /// Puts the files into the row's folder (copy or move).
+    Onto,
+    /// Adds the dropped folders as favourites at this index among the
+    /// favourites (the insertion line shows where).
+    Between(usize),
+}
+
+/// What a drop at height `y` of a sidebar row `height` pixels tall does.
+/// The top and bottom quarter of a favourite, the bottom quarter of the
+/// last fixed entry and the top quarter of the first drive count as
+/// "between" (there are `favourites` of them), but only if `folders` are
+/// among the dropped files: other files can't be favourites, so for them
+/// the whole row is "onto".
+pub fn sidebar_drop(row: SidebarRow, y: f64, height: f64, favourites: usize, folders: bool) -> SidebarDrop {
+    let edge = height / 4.0;
+    let (top, bottom) = (y < edge, y >= height - edge);
+    if !folders {
+        return SidebarDrop::Onto;
+    }
+    match row {
+        SidebarRow::Favourite(i) if top => SidebarDrop::Between(i),
+        SidebarRow::Favourite(i) if bottom => SidebarDrop::Between(i + 1),
+        SidebarRow::LastFixed if bottom => SidebarDrop::Between(0),
+        SidebarRow::FirstDrive if top => SidebarDrop::Between(favourites),
+        _ => SidebarDrop::Onto,
+    }
+}
+
+/// Where a favourite being dragged to reorder would go, as an insertion
+/// index (0..=favourites): above or below the favourite under the pointer,
+/// first just below the fixed entries, last just above the drives. None on
+/// other rows.
+pub fn reorder_spot(row: SidebarRow, y: f64, height: f64, favourites: usize) -> Option<usize> {
+    match row {
+        SidebarRow::Favourite(i) if y < height / 2.0 => Some(i),
+        SidebarRow::Favourite(i) => Some(i + 1),
+        SidebarRow::LastFixed => Some(0),
+        SidebarRow::FirstDrive => Some(favourites),
+        _ => None,
+    }
+}
+
+/// The new index of the favourite at `from` dropped at insertion index
+/// `to`, or None if that leaves it where it is.
+pub fn reordered(from: usize, to: usize) -> Option<usize> {
+    if to == from || to == from + 1 {
+        None
+    } else if to > from {
+        Some(to - 1)
+    } else {
+        Some(to)
+    }
+}
+
+/// What a drop between favourites adds: of `dropped` (each with whether it
+/// is a folder), the folders that are not favourites yet, in order, each
+/// once. Files that are not folders can't be favourites.
+pub fn new_favourites(dropped: &[(gio::File, bool)], existing: &[gio::File]) -> Vec<gio::File> {
+    let mut added: Vec<gio::File> = Vec::new();
+    for (file, is_folder) in dropped {
+        let known = |list: &[gio::File]| list.iter().any(|other| other.equal(file));
+        if *is_folder && !known(existing) && !known(&added) {
+            added.push(file.clone());
+        }
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +324,80 @@ mod tests {
         if std::path::Path::new("/proc/self").exists() {
             assert!(!same_file_system(&here, &f("/proc")));
         }
+    }
+
+    #[test]
+    fn sidebar_drops_between_or_onto() {
+        use SidebarDrop::{Between, Onto};
+        use SidebarRow::*;
+        let drop = |row, y| sidebar_drop(row, y, 40.0, 3, true);
+        // A favourite: top quarter above it, bottom quarter below it,
+        // the middle into its folder.
+        assert_eq!(drop(Favourite(1), 2.0), Between(1));
+        assert_eq!(drop(Favourite(1), 20.0), Onto);
+        assert_eq!(drop(Favourite(1), 38.0), Between(2));
+        assert_eq!(drop(Favourite(2), 39.9), Between(3));
+        // Just below Trash: the first place; just above the drives: the last.
+        assert_eq!(drop(LastFixed, 35.0), Between(0));
+        assert_eq!(drop(LastFixed, 2.0), Onto);
+        assert_eq!(drop(FirstDrive, 2.0), Between(3));
+        assert_eq!(drop(FirstDrive, 35.0), Onto);
+        // Home and other drives are only ever "onto".
+        assert_eq!(drop(Fixed, 2.0), Onto);
+        assert_eq!(drop(Drive, 2.0), Onto);
+        // No favourites yet: below Trash or above the drives is index 0.
+        assert_eq!(sidebar_drop(FirstDrive, 1.0, 40.0, 0, true), Between(0));
+        // Only files, no folders: they can't be favourites, so "onto".
+        assert_eq!(sidebar_drop(Favourite(1), 2.0, 40.0, 3, false), Onto);
+        assert_eq!(sidebar_drop(LastFixed, 39.0, 40.0, 3, false), Onto);
+    }
+
+    #[test]
+    fn reordering_favourites() {
+        use SidebarRow::*;
+        assert_eq!(reorder_spot(Favourite(2), 5.0, 40.0, 4), Some(2));
+        assert_eq!(reorder_spot(Favourite(2), 25.0, 40.0, 4), Some(3));
+        assert_eq!(reorder_spot(LastFixed, 25.0, 40.0, 4), Some(0));
+        assert_eq!(reorder_spot(FirstDrive, 25.0, 40.0, 4), Some(4));
+        assert_eq!(reorder_spot(Fixed, 25.0, 40.0, 4), None);
+        assert_eq!(reorder_spot(Drive, 25.0, 40.0, 4), None);
+        // Dropped just above or below itself: stays.
+        assert_eq!(reordered(1, 1), None);
+        assert_eq!(reordered(1, 2), None);
+        // Up and down (the index counts before it is taken out).
+        assert_eq!(reordered(3, 0), Some(0));
+        assert_eq!(reordered(0, 4), Some(3));
+        assert_eq!(reordered(0, 2), Some(1));
+    }
+
+    #[test]
+    fn folders_dropped_between_favourites() {
+        let existing = [f("/data/work"), f("/data/music")];
+        let dropped = [
+            (f("/data/photos"), true),
+            (f("/data/notes.txt"), false),
+            (f("/data/work"), true),
+            (f("/data/photos"), true),
+            (gio::File::for_uri("sftp://example.com/share"), true),
+        ];
+        let added: Vec<String> =
+            new_favourites(&dropped, &existing).iter().map(|file| file.uri().into()).collect();
+        assert_eq!(added, ["file:///data/photos", "sftp://example.com/share"]);
+        // Only files: nothing to add.
+        assert!(new_favourites(&[(f("/data/a.txt"), false)], &existing).is_empty());
+    }
+
+    #[test]
+    fn drops_onto_sidebar_entries() {
+        // The same checks as in a panel: onto the favourite of the folder
+        // the files are in, or a folder onto its own favourite.
+        let sources = [f("/data/work/Project")];
+        assert_eq!(check_drop(&sources, &f("/data/work")), DropCheck::AlreadyThere);
+        assert_eq!(check_drop(&sources, &f("/data/work/Project")), DropCheck::IntoItself);
+        assert_eq!(check_drop(&sources, &f("/home/me")), DropCheck::Go);
+        // Things already in the trash dropped onto Trash: nothing to do.
+        let trash = gio::File::for_uri("trash:///");
+        let trashed = [trash.child("old.txt")];
+        assert_eq!(check_drop(&trashed, &trash), DropCheck::AlreadyThere);
     }
 }

@@ -13,6 +13,12 @@ _Screenshot: to be added._
 
 - Two panels with breadcrumbs, a ".." row to go up, and sorting by name,
   size or date (click a column header).
+- Favourites sidebar (F1), as in GNOME Files: Home, Trash, your bookmarks
+  (the same ones GNOME Files and the file chooser show) and your drives,
+  USB sticks and connected network shares, with an eject button. Click an
+  entry to open it in the active panel. Ctrl+D adds the current folder;
+  drop folders between the favourites to add them, drag a favourite to
+  reorder, drop files onto an entry to copy or move them there.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
 - Mark several files with Space or Insert, then act on all of them.
 - Rename (F2), new folder (F7), copy (F5) and move (F6) to the other panel,
@@ -27,8 +33,8 @@ _Screenshot: to be added._
 - Open the file under the cursor in your text editor (F4), or a terminal in
   the current folder (Shift+F4).
 - Follows the system's light or dark style.
-- Remembers each panel's folder and sorting, the hidden-files choice and
-  your preferences.
+- Remembers each panel's folder and sorting, the hidden-files choice,
+  whether the sidebar is shown and your preferences.
 
 ## Keyboard
 
@@ -41,6 +47,12 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 | Enter | Open folder or file |
 | Backspace | Go to the parent folder |
 | Ctrl+H | Show hidden files |
+| F1 | Show or hide the favourites sidebar (it takes the keyboard) |
+| Ctrl+D | Add the current folder to the favourites |
+| Up, Down (in the sidebar) | Move through the favourites |
+| Enter (in the sidebar) | Open it in the active panel |
+| Escape or Tab (in the sidebar) | Back to the panel |
+| Delete (in the sidebar) | Remove the favourite (with Undo) |
 | Any letter | Jump to a name: start typing |
 | Up, Down (while typing a name) | Previous or next match |
 | Enter (while typing a name) | Open it and close the search |
@@ -130,7 +142,6 @@ These are planned but not built yet:
 
 - Search in subfolders
 - Tabs
-- Bookmarks
 - Comparing and syncing folders
 - Looking inside archives (zip and others)
 - Renaming many files at once
