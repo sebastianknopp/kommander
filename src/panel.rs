@@ -1,14 +1,18 @@
-// One panel: the current folder's path on top, its file list, and a status
-// line at the bottom.
+// One panel: breadcrumbs on top, the current folder's file list, and a status
+// line at the bottom (replaced by the type-to-search field while searching).
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gtk::prelude::*;
+use adw::prelude::*;
 use gtk::{gio, glib};
+
+use crate::pathbar::PathBar;
+use crate::settings::{Sort, SortColumn};
 
 /// File attributes the list needs; GtkDirectoryList adds "standard::file".
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
@@ -16,10 +20,16 @@ standard::icon,standard::size,standard::is-hidden,standard::is-backup,time::modi
 
 pub struct Panel {
     root: gtk::Box,
-    path_label: gtk::Label,
+    path_bar: Rc<PathBar>,
     status_label: gtk::Label,
+    search_bar: gtk::Box,
+    search_entry: gtk::SearchEntry,
     column_view: gtk::ColumnView,
+    /// The Name, Size and Modified columns, in `SortColumn` order.
+    columns: [gtk::ColumnViewColumn; 3],
     dir_list: gtk::DirectoryList,
+    hidden_filter: gtk::CustomFilter,
+    show_hidden: Rc<Cell<bool>>,
     selection: gtk::SingleSelection,
     active: Cell<bool>,
     /// Name of the entry to put the cursor on once the folder has loaded.
@@ -27,45 +37,52 @@ pub struct Panel {
 }
 
 impl Panel {
-    pub fn new(folder: &gio::File) -> Rc<Self> {
+    pub fn new(folder: &gio::File, show_hidden: bool, sort: Sort) -> Rc<Self> {
         let dir_list = gtk::DirectoryList::new(Some(ATTRIBUTES), None::<&gio::File>);
 
-        let visible = gtk::FilterListModel::new(
-            Some(dir_list.clone()),
-            Some(gtk::CustomFilter::new(|item| {
+        // Hidden and backup files are left out unless "show hidden" is on.
+        let show_hidden = Rc::new(Cell::new(show_hidden));
+        let hidden_filter = gtk::CustomFilter::new(glib::clone!(
+            #[strong]
+            show_hidden,
+            move |item| {
                 let info = item.downcast_ref::<gio::FileInfo>().unwrap();
-                !info.is_hidden() && !info.is_backup()
-            })),
-        );
-        let sorted = gtk::SortListModel::new(
-            Some(visible),
-            Some(gtk::CustomSorter::new(|a, b| {
-                let a = a.downcast_ref::<gio::FileInfo>().unwrap();
-                let b = b.downcast_ref::<gio::FileInfo>().unwrap();
-                compare_entries(a, b).into()
-            })),
-        );
-        let selection = gtk::SingleSelection::new(Some(sorted));
+                show_hidden.get() || (!info.is_hidden() && !info.is_backup())
+            }
+        ));
+        let visible = gtk::FilterListModel::new(Some(dir_list.clone()), Some(hidden_filter.clone()));
 
+        let columns = [name_column(), size_column(), modified_column()];
         let column_view = gtk::ColumnView::builder()
-            .model(&selection)
             .reorderable(false)
             .vexpand(true)
             .build();
-        column_view.append_column(&name_column());
-        column_view.append_column(&size_column());
-        column_view.append_column(&modified_column());
+        for column in &columns {
+            column_view.append_column(column);
+        }
+
+        // Folders always come first; within that, the list follows the column
+        // whose header was clicked (GTK reverses only that part on a second click).
+        let sorter = gtk::MultiSorter::new();
+        sorter.append(sorter_from(folders_first));
+        sorter.append(column_view.sorter().unwrap());
+        let sorted = gtk::SortListModel::new(Some(visible), Some(sorter));
+        let selection = gtk::SingleSelection::new(Some(sorted));
+        column_view.set_model(Some(&selection));
+
+        let order = if sort.descending {
+            gtk::SortType::Descending
+        } else {
+            gtk::SortType::Ascending
+        };
+        column_view.sort_by_column(Some(&columns[sort.column as usize]), order);
 
         let scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&column_view)
             .build();
 
-        let path_label = gtk::Label::builder()
-            .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::Start)
-            .css_classes(["path-label"])
-            .build();
+        let path_bar = PathBar::new();
 
         let status_label = gtk::Label::builder()
             .xalign(0.0)
@@ -73,21 +90,37 @@ impl Panel {
             .css_classes(["status-line", "dimmed", "caption", "numeric"])
             .build();
 
+        let search_entry = gtk::SearchEntry::builder()
+            .hexpand(true)
+            .placeholder_text("Jump to Name")
+            .build();
+        let search_bar = gtk::Box::builder()
+            .visible(false)
+            .css_classes(["search-bar"])
+            .build();
+        search_bar.append(&search_entry);
+
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .hexpand(true)
             .css_classes(["panel"])
             .build();
-        root.append(&path_label);
+        root.append(path_bar.widget());
         root.append(&scrolled);
+        root.append(&search_bar);
         root.append(&status_label);
 
         let panel = Rc::new(Panel {
             root,
-            path_label,
+            path_bar,
             status_label,
+            search_bar,
+            search_entry,
             column_view,
+            columns,
             dir_list,
+            hidden_filter,
+            show_hidden,
             selection,
             active: Cell::new(false),
             cursor_target: RefCell::new(None),
@@ -128,18 +161,65 @@ impl Panel {
         self.root.add_controller(click);
     }
 
+    /// Calls `f` whenever the user sorts by another column or direction.
+    pub fn connect_sort_changed(&self, f: impl Fn() + 'static) {
+        if let Some(sorter) = self.column_view.sorter() {
+            sorter.connect_changed(move |_, _| f());
+        }
+    }
+
+    /// The folder shown, if any.
+    pub fn folder(&self) -> Option<gio::File> {
+        self.dir_list.file()
+    }
+
+    /// The column and direction the list is sorted by.
+    pub fn sort(&self) -> Sort {
+        let Some(sorter) = self.column_view.sorter().and_downcast::<gtk::ColumnViewSorter>() else {
+            return Sort::default();
+        };
+        let column = sorter
+            .primary_sort_column()
+            .and_then(|primary| self.columns.iter().position(|c| *c == primary))
+            .map_or(SortColumn::Name, |i| {
+                [SortColumn::Name, SortColumn::Size, SortColumn::Modified][i]
+            });
+        Sort {
+            column,
+            descending: sorter.primary_sort_order() == gtk::SortType::Descending,
+        }
+    }
+
+    /// Shows or hides hidden and backup files.
+    pub fn set_show_hidden(&self, show: bool) {
+        if self.show_hidden.replace(show) == show {
+            return;
+        }
+        self.hidden_filter.changed(if show {
+            gtk::FilterChange::LessStrict
+        } else {
+            gtk::FilterChange::MoreStrict
+        });
+        // Rows may have been removed under the keyboard focus.
+        if self.active.get() && !self.is_searching() {
+            self.focus();
+        }
+    }
+
     fn connect_signals(self: &Rc<Self>) {
-        // Enter or double-click on a folder opens it.
+        // Enter or double-click opens the folder or file.
         let weak = Rc::downgrade(self);
         self.column_view.connect_activate(move |_, position| {
-            let Some(panel) = weak.upgrade() else { return };
-            let Some(info) = panel.entry(position) else {
-                return;
-            };
-            if info.file_type() == gio::FileType::Directory
-                && let Some(file) = info.attribute_object("standard::file")
-            {
-                panel.open(&file.downcast::<gio::File>().unwrap(), None);
+            if let Some(panel) = weak.upgrade() {
+                panel.activate(position);
+            }
+        });
+
+        // Clicking a breadcrumb goes to that folder.
+        let weak = Rc::downgrade(self);
+        self.path_bar.connect_clicked(move |folder| {
+            if let Some(panel) = weak.upgrade() {
+                panel.open_ancestor(folder);
             }
         });
 
@@ -160,6 +240,24 @@ impl Panel {
                 panel.update_status();
             }
         });
+
+        // Type-to-search: every change of the text jumps to the first match.
+        let weak = Rc::downgrade(self);
+        self.search_entry.connect_changed(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.jump(Jump::First);
+            }
+        });
+
+        // Clicking elsewhere closes the search field.
+        let focus = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(self);
+        focus.connect_leave(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.close_search();
+            }
+        });
+        self.search_entry.add_controller(focus);
     }
 
     fn update_status(&self) {
@@ -179,8 +277,9 @@ impl Panel {
     /// Shows `folder`; once loaded, the cursor goes to the entry named
     /// `cursor_on` (or to the first entry).
     fn open(&self, folder: &gio::File, cursor_on: Option<PathBuf>) {
+        self.close_search();
         self.cursor_target.replace(cursor_on);
-        self.path_label.set_label(&folder.parse_name());
+        self.path_bar.set_location(folder);
         self.dir_list.set_file(Some(folder));
     }
 
@@ -191,6 +290,97 @@ impl Panel {
         };
         if let Some(parent) = current.parent() {
             self.open(&parent, current.basename());
+        }
+    }
+
+    /// Goes to `folder`, one of the current folder's ancestors, with the
+    /// cursor on the subfolder we came through.
+    fn open_ancestor(&self, folder: &gio::File) {
+        let mut child = self.dir_list.file();
+        while let Some(file) = child {
+            match file.parent() {
+                Some(parent) if parent.equal(folder) => {
+                    return self.open(folder, file.basename());
+                }
+                parent => child = parent,
+            }
+        }
+        self.open(folder, None);
+    }
+
+    /// Opens the entry at `position`: folders in the panel, files with their
+    /// default app.
+    fn activate(&self, position: u32) {
+        let Some(info) = self.entry(position) else {
+            return;
+        };
+        let Some(file) = entry_file(&info) else {
+            return;
+        };
+        if info.file_type() == gio::FileType::Directory {
+            self.open(&file, None);
+            return;
+        }
+        // Launched directly with the default app, as Nautilus does.
+        // (gtk::FileLauncher goes through the desktop portal, which asks
+        // "Open With…" instead of using the default app.)
+        let root = self.root.clone();
+        let name = info.display_name();
+        let context = self.root.display().app_launch_context();
+        gio::AppInfo::launch_default_for_uri_async(
+            &file.uri(),
+            Some(&context),
+            gio::Cancellable::NONE,
+            move |result| {
+                if let Err(error) = result {
+                    eprintln!("Could not open {name}: {error}");
+                    toast(&root, &format!("Could not open “{name}”"));
+                }
+            },
+        );
+    }
+
+    /// Opens the file under the cursor in the default text editor (F4).
+    pub fn edit(&self) {
+        let Some(info) = self.selection.selected_item().and_downcast::<gio::FileInfo>() else {
+            return;
+        };
+        if info.file_type() == gio::FileType::Directory {
+            toast(&self.root, "Folders can’t be edited");
+            return;
+        }
+        let Some(file) = entry_file(&info) else {
+            return;
+        };
+        let Some(editor) = gio::AppInfo::default_for_type("text/plain", false) else {
+            toast(&self.root, "No text editor is set up");
+            return;
+        };
+        let context = self.root.display().app_launch_context();
+        if let Err(error) = editor.launch(&[file], Some(&context)) {
+            eprintln!("Could not edit {}: {error}", info.display_name());
+            toast(
+                &self.root,
+                &format!("Could not open “{}” in {}", info.display_name(), editor.display_name()),
+            );
+        }
+    }
+
+    /// Opens a terminal in the current folder (Shift+F4).
+    pub fn open_terminal(&self) {
+        let Some(path) = self.dir_list.file().and_then(|folder| folder.path()) else {
+            toast(&self.root, "Terminals can only be opened in local folders");
+            return;
+        };
+        // The terminal's own messages are not ours to print.
+        let launcher = gio::SubprocessLauncher::new(
+            gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_SILENCE,
+        );
+        launcher.set_cwd(&path);
+        launcher.setenv("PWD", &path, true);
+        if let Err(error) = launcher.spawn(&[OsStr::new("xdg-terminal-exec")]) {
+            eprintln!("Could not start xdg-terminal-exec: {error}");
+            toast(&self.root, "Could not open a terminal");
         }
     }
 
@@ -207,13 +397,138 @@ impl Panel {
         self.column_view
             .scroll_to(position, None, gtk::ListScrollFlags::SELECT, None);
         // Reloading the list drops the keyboard focus; the active panel takes it back.
-        if self.active.get() {
+        if self.active.get() && !self.is_searching() {
             self.focus();
         }
     }
 
     fn entry(&self, position: u32) -> Option<gio::FileInfo> {
         self.selection.item(position).and_downcast()
+    }
+
+    // --- Type-to-search ---
+
+    pub fn is_searching(&self) -> bool {
+        self.search_bar.is_visible()
+    }
+
+    /// Opens the search field with `first` as its text.
+    pub fn start_search(&self, first: char) {
+        self.status_label.set_visible(false);
+        self.search_bar.set_visible(true);
+        self.search_entry.grab_focus();
+        self.search_entry.set_text(&first.to_string());
+        self.search_entry.set_position(-1);
+    }
+
+    /// Closes the search field, leaving the cursor where it is.
+    pub fn close_search(&self) {
+        if !self.is_searching() {
+            return;
+        }
+        self.search_bar.set_visible(false);
+        self.status_label.set_visible(true);
+        self.search_entry.set_text("");
+        self.search_entry.remove_css_class("error");
+        if self.active.get() {
+            self.focus();
+        }
+    }
+
+    /// Moves the cursor to the next (or previous) match of the search text.
+    pub fn search_step(&self, forward: bool) {
+        let current = self.selection.selected();
+        if current == gtk::INVALID_LIST_POSITION {
+            self.jump(Jump::First);
+        } else if forward {
+            self.jump(Jump::Next(current as usize));
+        } else {
+            self.jump(Jump::Previous(current as usize));
+        }
+    }
+
+    /// Closes the search field and opens the entry under the cursor.
+    pub fn search_activate(&self) {
+        let position = self.selection.selected();
+        self.close_search();
+        if position != gtk::INVALID_LIST_POSITION {
+            self.activate(position);
+        }
+    }
+
+    fn jump(&self, jump: Jump) {
+        let query = self.search_entry.text();
+        if query.is_empty() {
+            self.search_entry.remove_css_class("error");
+            return;
+        }
+        let names: Vec<String> = (0..self.selection.n_items())
+            .filter_map(|i| self.entry(i))
+            .map(|info| info.display_name().into())
+            .collect();
+        match find_match(&names, &query, jump) {
+            Some(position) => {
+                self.search_entry.remove_css_class("error");
+                self.column_view.scroll_to(
+                    position as u32,
+                    None,
+                    gtk::ListScrollFlags::SELECT,
+                    None,
+                );
+            }
+            None => self.search_entry.add_css_class("error"),
+        }
+    }
+}
+
+/// Shows a short message on the window's toast overlay.
+fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
+    if let Some(overlay) = widget
+        .ancestor(adw::ToastOverlay::static_type())
+        .and_downcast::<adw::ToastOverlay>()
+    {
+        overlay.add_toast(adw::Toast::new(text));
+    }
+}
+
+fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
+    info.attribute_object("standard::file").and_downcast()
+}
+
+/// Where type-to-search should look for a match.
+#[derive(Clone, Copy, Debug)]
+enum Jump {
+    First,
+    Next(usize),
+    Previous(usize),
+}
+
+/// The position of a name matching `query`, ignoring case. Names starting
+/// with the text are the matches; if there are none, names containing it
+/// are. `Next`/`Previous` go to the match after/before a position, wrapping
+/// around at the end.
+fn find_match(names: &[String], query: &str, jump: Jump) -> Option<usize> {
+    let query = query.to_lowercase();
+    let lower: Vec<String> = names.iter().map(|name| name.to_lowercase()).collect();
+    let mut matches: Vec<usize> = (0..lower.len())
+        .filter(|&i| lower[i].starts_with(&query))
+        .collect();
+    if matches.is_empty() {
+        matches = (0..lower.len()).filter(|&i| lower[i].contains(&query)).collect();
+    }
+    match jump {
+        Jump::First => matches.first().copied(),
+        Jump::Next(from) => matches
+            .iter()
+            .copied()
+            .find(|&i| i > from)
+            .or(matches.first().copied()),
+        Jump::Previous(from) => matches
+            .iter()
+            .copied()
+            .rev()
+            .find(|&i| i < from)
+            .or(matches.last().copied()),
     }
 }
 
@@ -231,20 +546,47 @@ fn status_text(count: u32, file_bytes: Option<u64>) -> String {
     }
 }
 
-/// Folders first, then by name, ignoring case (and sorting "file2" before "file10").
-fn compare_entries(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
-    let a_dir = a.file_type() == gio::FileType::Directory;
-    let b_dir = b.file_type() == gio::FileType::Directory;
-    b_dir.cmp(&a_dir).then_with(|| {
-        let a_key = glib::FilenameCollationKey::from(a.display_name().to_lowercase());
-        let b_key = glib::FilenameCollationKey::from(b.display_name().to_lowercase());
-        a_key.cmp(&b_key)
+fn is_dir(info: &gio::FileInfo) -> bool {
+    info.file_type() == gio::FileType::Directory
+}
+
+/// Folders before files.
+fn folders_first(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
+    is_dir(b).cmp(&is_dir(a))
+}
+
+/// By name, ignoring case (and sorting "file2" before "file10").
+fn compare_names(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
+    let a_key = glib::FilenameCollationKey::from(a.display_name().to_lowercase());
+    let b_key = glib::FilenameCollationKey::from(b.display_name().to_lowercase());
+    a_key.cmp(&b_key)
+}
+
+/// By size, then name. Folders have no meaningful size, so they go by name.
+fn compare_sizes(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
+    let size = |info: &gio::FileInfo| if is_dir(info) { 0 } else { info.size() };
+    size(a).cmp(&size(b)).then_with(|| compare_names(a, b))
+}
+
+/// By modification time, then name.
+fn compare_modified(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
+    let time = |info: &gio::FileInfo| info.attribute_uint64("time::modified");
+    time(a).cmp(&time(b)).then_with(|| compare_names(a, b))
+}
+
+fn sorter_from(compare: fn(&gio::FileInfo, &gio::FileInfo) -> Ordering) -> gtk::CustomSorter {
+    gtk::CustomSorter::new(move |a, b| {
+        let a = a.downcast_ref::<gio::FileInfo>().unwrap();
+        let b = b.downcast_ref::<gio::FileInfo>().unwrap();
+        compare(a, b).into()
     })
 }
 
-/// Builds a list column whose cells are created by `setup` and filled by `bind`.
+/// Builds a list column whose cells are created by `setup` and filled by
+/// `bind`, sorted by `compare` when its header is clicked.
 fn column(
     title: &str,
+    compare: fn(&gio::FileInfo, &gio::FileInfo) -> Ordering,
     setup: impl Fn() -> gtk::Widget + 'static,
     bind: impl Fn(&gtk::Widget, &gio::FileInfo) + 'static,
 ) -> gtk::ColumnViewColumn {
@@ -265,12 +607,15 @@ fn column(
         };
         bind(&child, &info);
     });
-    gtk::ColumnViewColumn::new(Some(title), Some(factory))
+    let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
+    column.set_sorter(Some(&sorter_from(compare)));
+    column
 }
 
 fn name_column() -> gtk::ColumnViewColumn {
     let column = column(
         "Name",
+        compare_names,
         || {
             // Its size comes from style.css, so it can change live.
             let icon = gtk::Image::new();
@@ -302,9 +647,10 @@ fn name_column() -> gtk::ColumnViewColumn {
 fn size_column() -> gtk::ColumnViewColumn {
     let column = column(
         "Size",
+        compare_sizes,
         || detail_label(1.0),
         |cell, info| {
-            let text = if info.file_type() == gio::FileType::Directory {
+            let text = if is_dir(info) {
                 glib::GString::new()
             } else {
                 glib::format_size(info.size() as u64)
@@ -319,6 +665,7 @@ fn size_column() -> gtk::ColumnViewColumn {
 fn modified_column() -> gtk::ColumnViewColumn {
     let column = column(
         "Modified",
+        compare_modified,
         || detail_label(0.0),
         |cell, info| {
             let text = info
@@ -362,4 +709,92 @@ fn format_date(date: &glib::DateTime) -> String {
         "%-e %b %Y"
     };
     date.format(format).map(Into::into).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn search_prefers_names_starting_with_the_text() {
+        let list = names(&["Documents", "Music", "notes.txt", "Pictures", "my notes"]);
+        assert_eq!(find_match(&list, "no", Jump::First), Some(2));
+        assert_eq!(find_match(&list, "MU", Jump::First), Some(1));
+        // Nothing starts with "ic": fall back to names containing it.
+        assert_eq!(find_match(&list, "ic", Jump::First), Some(1));
+        assert_eq!(find_match(&list, "xyz", Jump::First), None);
+    }
+
+    #[test]
+    fn search_steps_through_matches_and_wraps() {
+        let list = names(&["a1", "b", "a2", "c", "a3"]);
+        assert_eq!(find_match(&list, "a", Jump::Next(0)), Some(2));
+        assert_eq!(find_match(&list, "a", Jump::Next(2)), Some(4));
+        assert_eq!(find_match(&list, "a", Jump::Next(4)), Some(0));
+        assert_eq!(find_match(&list, "a", Jump::Previous(2)), Some(0));
+        assert_eq!(find_match(&list, "a", Jump::Previous(0)), Some(4));
+        // Only "contains" matches: stepping uses those.
+        assert_eq!(find_match(&list, "3", Jump::Next(0)), Some(4));
+    }
+
+    fn info(name: &str, dir: bool, size: i64, modified: u64) -> gio::FileInfo {
+        let info = gio::FileInfo::new();
+        info.set_name(name);
+        info.set_display_name(name);
+        info.set_file_type(if dir {
+            gio::FileType::Directory
+        } else {
+            gio::FileType::Regular
+        });
+        info.set_size(size);
+        info.set_attribute_uint64("time::modified", modified);
+        info
+    }
+
+    /// Mirrors the list's sorter: folders first, then the column, which GTK
+    /// reverses on its own for a descending sort.
+    fn sorted(
+        mut list: Vec<gio::FileInfo>,
+        compare: fn(&gio::FileInfo, &gio::FileInfo) -> Ordering,
+        descending: bool,
+    ) -> Vec<String> {
+        list.sort_by(|a, b| {
+            let column = compare(a, b);
+            folders_first(a, b).then(if descending { column.reverse() } else { column })
+        });
+        list.iter().map(|i| i.name().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn sorting_keeps_folders_first() {
+        let list = || {
+            vec![
+                info("file10", false, 300, 1),
+                info("Zeta", true, 4096, 5),
+                info("file2", false, 100, 3),
+                info("alpha", true, 4096, 2),
+                info("big", false, 900, 2),
+            ]
+        };
+        assert_eq!(
+            sorted(list(), compare_names, false),
+            ["alpha", "Zeta", "big", "file2", "file10"]
+        );
+        assert_eq!(
+            sorted(list(), compare_names, true),
+            ["Zeta", "alpha", "file10", "file2", "big"]
+        );
+        assert_eq!(
+            sorted(list(), compare_sizes, true),
+            ["Zeta", "alpha", "big", "file10", "file2"]
+        );
+        assert_eq!(
+            sorted(list(), compare_modified, false),
+            ["alpha", "Zeta", "file10", "big", "file2"]
+        );
+    }
 }

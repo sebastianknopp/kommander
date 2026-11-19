@@ -41,10 +41,38 @@ impl State {
             self.panels_box.remove_css_class("small-icons");
         }
     }
+
+    /// Saves the settings, together with each panel's folder and sort order.
+    fn save_settings(&self) {
+        let mut settings = self.settings.borrow_mut();
+        for (i, panel) in self.panels.iter().enumerate() {
+            settings.folders[i] = panel.folder().map(|folder| folder.uri().into());
+            settings.sort[i] = panel.sort();
+        }
+        settings.save();
+    }
+}
+
+/// The remembered folder `uri` if it still exists and can be reached,
+/// otherwise the home folder.
+fn start_folder(uri: Option<&str>) -> gio::File {
+    uri.map(gio::File::for_uri)
+        .filter(|folder| {
+            folder.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+                == gio::FileType::Directory
+        })
+        .unwrap_or_else(|| gio::File::for_path(glib::home_dir()))
 }
 
 pub fn build(app: &adw::Application) {
-    let home = gio::File::for_path(glib::home_dir());
+    let settings = Settings::load();
+    let panels = [0, 1].map(|i| {
+        Panel::new(
+            &start_folder(settings.folders[i].as_deref()),
+            settings.show_hidden,
+            settings.sort[i],
+        )
+    });
 
     // Two equal-width panels; the separator line between them comes from CSS.
     let panels_box = gtk::Box::builder()
@@ -54,10 +82,10 @@ pub fn build(app: &adw::Application) {
         .build();
 
     let state = Rc::new(State {
-        panels: [Panel::new(&home), Panel::new(&home)],
+        panels,
         active: Cell::new(0),
         panels_box: panels_box.clone(),
-        settings: RefCell::new(Settings::load()),
+        settings: RefCell::new(settings),
     });
     for panel in &state.panels {
         panels_box.append(panel.widget());
@@ -70,9 +98,14 @@ pub fn build(app: &adw::Application) {
     // Header bar like GNOME Files: centred title, primary menu on the right.
     // (A progress button for file operations will later be packed next to it.)
     let menu = gio::Menu::new();
-    menu.append(Some("_Preferences"), Some("app.preferences"));
-    menu.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
-    menu.append(Some("_About Kommander"), Some("app.about"));
+    let view_section = gio::Menu::new();
+    view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
+    menu.append_section(None, &view_section);
+    let app_section = gio::Menu::new();
+    app_section.append(Some("_Preferences"), Some("app.preferences"));
+    app_section.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
+    app_section.append(Some("_About Kommander"), Some("app.about"));
+    menu.append_section(None, &app_section);
     let menu_button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .menu_model(&menu)
@@ -101,6 +134,25 @@ pub fn build(app: &adw::Application) {
         .content(&toolbar_view)
         .build();
 
+    // Sorting by another column is remembered right away.
+    for panel in &state.panels {
+        let state_weak = Rc::downgrade(&state);
+        panel.connect_sort_changed(move || {
+            if let Some(state) = state_weak.upgrade() {
+                state.save_settings();
+            }
+        });
+    }
+
+    // Both panels' folders are remembered when the window closes.
+    let state_weak = Rc::downgrade(&state);
+    window.connect_close_request(move |_| {
+        if let Some(state) = state_weak.upgrade() {
+            state.save_settings();
+        }
+        glib::Propagation::Proceed
+    });
+
     // Clicking into a panel makes it the active one.
     for (index, panel) in state.panels.iter().enumerate() {
         let state_weak = Rc::downgrade(&state);
@@ -115,8 +167,10 @@ pub fn build(app: &adw::Application) {
 
     // Global keys, caught before any widget sees them: Tab switches panels
     // (so GTK never walks the focus through the widgets), Backspace goes up
-    // in the active panel. This handler, owned by the window, keeps the
-    // window state and with it the panels alive.
+    // in the active panel, and typing a character starts type-to-search.
+    // While the search field is open it gets the keys instead, except for
+    // the few that steer the search. This handler, owned by the window,
+    // keeps the window state and with it the panels alive.
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let window_state = state.clone();
@@ -129,25 +183,58 @@ pub fn build(app: &adw::Application) {
         {
             return glib::Propagation::Proceed;
         }
-        if modifiers.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
+        if modifiers.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        ) {
             return glib::Propagation::Proceed;
         }
         let active = window_state.active.get();
-        match key {
-            gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab => {
-                window_state.activate(1 - active, true);
-                glib::Propagation::Stop
+        let panel = &window_state.panels[active];
+        let is_tab = matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab);
+
+        if panel.is_searching() {
+            match key {
+                gdk::Key::Up | gdk::Key::KP_Up => panel.search_step(false),
+                gdk::Key::Down | gdk::Key::KP_Down => panel.search_step(true),
+                gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
+                    panel.search_activate()
+                }
+                gdk::Key::Escape => panel.close_search(),
+                _ if is_tab => {
+                    panel.close_search();
+                    window_state.activate(1 - active, true);
+                }
+                // Everything else (text, Backspace, Left/Right...) edits the search.
+                _ => return glib::Propagation::Proceed,
             }
-            gdk::Key::BackSpace if !modifiers.contains(gdk::ModifierType::SHIFT_MASK) => {
-                window_state.panels[active].open_parent();
-                glib::Propagation::Stop
-            }
-            _ => glib::Propagation::Proceed,
+            return glib::Propagation::Stop;
         }
+
+        if is_tab {
+            window_state.activate(1 - active, true);
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+            panel.open_parent();
+            return glib::Propagation::Stop;
+        }
+        // A printable character starts the search; Space does not (it is
+        // kept for marking files).
+        if let Some(c) = key.to_unicode()
+            && !c.is_control()
+            && !c.is_whitespace()
+        {
+            panel.start_search(c);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
     });
     window.add_controller(keys);
 
     add_app_actions(app, &window, &state);
+    add_window_actions(app, &window, &state);
 
     window.present();
     state.activate(0, true);
@@ -196,6 +283,56 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
     app.add_action_entries([preferences, shortcuts, about]);
     app.set_accels_for_action("app.preferences", &["<Control>comma"]);
     app.set_accels_for_action("app.shortcuts", &["<Control>question"]);
+}
+
+/// Actions that act on the panels, bound to keys and to the function-key bar.
+fn add_window_actions(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    state: &Rc<State>,
+) {
+    // Ctrl+H: show or hide hidden files in both panels.
+    let state_weak = Rc::downgrade(state);
+    let show_hidden = gio::ActionEntry::builder("show-hidden")
+        .state(state.settings.borrow().show_hidden.to_variant())
+        .activate(move |_, action, _| {
+            let Some(state) = state_weak.upgrade() else {
+                return;
+            };
+            let show = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            action.set_state(&show.to_variant());
+            for panel in &state.panels {
+                panel.set_show_hidden(show);
+            }
+            state.settings.borrow_mut().show_hidden = show;
+            state.save_settings();
+        })
+        .build();
+
+    // F4: open the file under the cursor in the text editor.
+    let state_weak = Rc::downgrade(state);
+    let edit = gio::ActionEntry::builder("edit")
+        .activate(move |_, _, _| {
+            if let Some(state) = state_weak.upgrade() {
+                state.panels[state.active.get()].edit();
+            }
+        })
+        .build();
+
+    // Shift+F4: open a terminal in the active panel's folder.
+    let state_weak = Rc::downgrade(state);
+    let terminal = gio::ActionEntry::builder("terminal")
+        .activate(move |_, _, _| {
+            if let Some(state) = state_weak.upgrade() {
+                state.panels[state.active.get()].open_terminal();
+            }
+        })
+        .build();
+
+    window.add_action_entries([show_hidden, edit, terminal]);
+    app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
+    app.set_accels_for_action("win.edit", &["F4"]);
+    app.set_accels_for_action("win.terminal", &["<Shift>F4"]);
 }
 
 const DEVELOPER: &str = "Sebastian Knopp";
@@ -282,8 +419,19 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let panels = adw::ShortcutsSection::new(Some("Panels"));
     panels.add(adw::ShortcutsItem::new("Switch to the other panel", "Tab"));
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
-    panels.add(adw::ShortcutsItem::new("Open folder", "Return"));
+    panels.add(adw::ShortcutsItem::new("Open folder or file", "Return"));
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
+    panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
+
+    let search = adw::ShortcutsSection::new(Some("Jump to Name"));
+    search.add(adw::ShortcutsItem::new("Start by typing any letter", "a...z"));
+    search.add(adw::ShortcutsItem::new("Previous or next match", "Up Down"));
+    search.add(adw::ShortcutsItem::new("Open and close the search", "Return"));
+    search.add(adw::ShortcutsItem::new("Close the search", "Escape"));
+
+    let files = adw::ShortcutsSection::new(Some("Files"));
+    files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));
+    files.add(adw::ShortcutsItem::new("Open a terminal here", "<Shift>F4"));
 
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new("Preferences", "<Control>comma"));
@@ -291,6 +439,8 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
 
     let dialog = adw::ShortcutsDialog::new();
     dialog.add(panels);
+    dialog.add(search);
+    dialog.add(files);
     dialog.add(general);
     dialog
 }

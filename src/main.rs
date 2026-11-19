@@ -3,6 +3,7 @@
 
 mod fkeybar;
 mod panel;
+mod pathbar;
 mod preferences;
 mod settings;
 mod window;
