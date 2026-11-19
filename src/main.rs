@@ -20,7 +20,7 @@ mod window;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 
-const APP_ID: &str = "io.github.sebastianknopp.Kommander";
+const APP_ID: &str = "io.github.sebastianknopp.kommander";
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();

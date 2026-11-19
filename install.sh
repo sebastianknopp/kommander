@@ -6,13 +6,13 @@
 #
 # What goes where:
 #   the program    ~/.local/bin/kommander
-#   menu entry     ~/.local/share/applications/io.github.sebastianknopp.Kommander.desktop
+#   menu entry     ~/.local/share/applications/io.github.sebastianknopp.kommander.desktop
 #   icons          ~/.local/share/icons/hicolor/{scalable,symbolic}/apps/
 # (~/.local/share follows $XDG_DATA_HOME if set; PREFIX overrides both.)
 # Run ./uninstall.sh with the same PREFIX to remove it all again.
 set -euo pipefail
 
-APP_ID=io.github.sebastianknopp.Kommander
+APP_ID=io.github.sebastianknopp.kommander
 cd "$(dirname "$0")"
 
 if [ -n "${PREFIX:-}" ]; then
@@ -32,6 +32,21 @@ fi
 
 echo "Building Kommander (this takes a few minutes the first time)..."
 cargo build --release --quiet
+
+# --- Remove before public release -----------------------------------------
+# The app ID used to be spelt with a capital K. Removes an installation
+# under that old ID (menu entry and the two icons, in the same folders as
+# below), so there are not two "Kommander" entries in the app launcher.
+OLD_APP_ID=io.github.sebastianknopp.Kommander
+for old in "$APPS_DIR/$OLD_APP_ID.desktop" \
+    "$ICON_DIR/scalable/apps/$OLD_APP_ID.svg" \
+    "$ICON_DIR/symbolic/apps/$OLD_APP_ID-symbolic.svg"; do
+    if [ -e "$old" ]; then
+        rm -f "$old"
+        echo "Removed the old $old"
+    fi
+done
+# --- End of "remove before public release" ---------------------------------
 
 install -Dm755 target/release/kommander "$BIN_DIR/kommander"
 install -Dm644 "data/icons/hicolor/scalable/apps/$APP_ID.svg" \

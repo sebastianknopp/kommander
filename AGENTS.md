@@ -8,7 +8,7 @@ not in tool-specific files.
 
 **Kommander** is a two-panel file manager in the Norton Commander tradition
 with the look of GNOME Files, written in Rust with gtk4-rs and libadwaita,
-for Omarchy (Arch Linux + Hyprland). App ID `io.github.sebastianknopp.Kommander`,
+for Omarchy (Arch Linux + Hyprland). App ID `io.github.sebastianknopp.kommander`,
 binary `kommander`, licence GPL-3.0-or-later. The owner plans to contribute it
 to the Omarchy community. The name nods to Norton Commander and to the German
 film "Superstau" (the About dialog calls it "Der Kommander" and has a small
@@ -45,7 +45,7 @@ Arch packages: `rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib`
   overrides). Test them only with `PREFIX` pointing at a throwaway folder.
 
 Files:
-- `data/io.github.sebastianknopp.Kommander.desktop` — must pass
+- `data/io.github.sebastianknopp.kommander.desktop` — must pass
   `desktop-file-validate`; install.sh writes the absolute binary path into
   `Exec=`. No `MimeType=` until the app accepts a folder argument.
 - `data/icons/hicolor/` — app icon (scalable) and symbolic icon. Debug builds
