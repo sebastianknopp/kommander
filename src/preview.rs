@@ -31,6 +31,10 @@ use sourceview::prelude::*;
 const DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// How much of a text file is shown.
 const TEXT_LIMIT: usize = 256 * 1024;
+/// Lines longer than this are cut off. A text view takes seconds (and a lot
+/// of memory) over a single line of hundreds of thousands of characters, as
+/// in minified HTML or JavaScript.
+const LINE_LIMIT: usize = 1000;
 /// How many pages of a PDF are shown, and how wide they are rendered.
 const PDF_PAGES: i32 = 10;
 const PDF_WIDTH: f64 = 1200.0;
@@ -99,7 +103,8 @@ enum Content {
     Video,
     Audio,
     Pdf { pages: Vec<gdk::Texture>, total: i32 },
-    Text { text: String, cut: bool },
+    /// `shortened`: lines were cut at `LINE_LIMIT`.
+    Text { text: String, cut: bool, shortened: bool },
     /// Nothing better than the facts; with the reason if something failed.
     Other(Option<String>),
 }
@@ -465,12 +470,22 @@ impl Preview {
                 self.pdf_scroll.vadjustment().set_value(0.0);
                 "pdf"
             }
-            Content::Text { text, cut } => {
+            Content::Text { text, cut, shortened } => {
                 if cut {
                     status.push_str(" · beginning only");
                 }
-                let language = sourceview::LanguageManager::default()
-                    .guess_language(Some(&details.name), Some(details.content_type.as_str()));
+                if shortened {
+                    status.push_str(" · long lines shortened");
+                }
+                // Colouring cut-off lines would only mislead (and cost time).
+                let language = (!shortened)
+                    .then(|| {
+                        sourceview::LanguageManager::default().guess_language(
+                            Some(&details.name),
+                            Some(details.content_type.as_str()),
+                        )
+                    })
+                    .flatten();
                 self.text_buffer.set_language(language.as_ref());
                 self.text_buffer.set_text(&text);
                 self.text_scroll.vadjustment().set_value(0.0);
@@ -746,7 +761,34 @@ fn load_text(file: &gio::File, cancellable: &gio::Cancellable) -> Result<Content
     if buffer.contains(&0) {
         return Ok(Content::Other(None));
     }
-    Ok(Content::Text { text: text_from(&buffer, cut), cut })
+    let (text, shortened) = shorten_lines(&text_from(&buffer, cut));
+    Ok(Content::Text { text, cut, shortened })
+}
+
+/// Cuts every line longer than `LINE_LIMIT` characters, marking the cut
+/// with "…". Says whether anything was cut.
+fn shorten_lines(text: &str) -> (String, bool) {
+    // The common case: nothing to do. (Bytes are at least as many as
+    // characters, so short in bytes is short in characters.)
+    if text.lines().all(|line| line.len() <= LINE_LIMIT) {
+        return (text.to_owned(), false);
+    }
+    let mut shortened = String::with_capacity(text.len().min(64 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        match body.char_indices().nth(LINE_LIMIT) {
+            Some((end, _)) => {
+                shortened.push_str(&body[..end]);
+                shortened.push_str(" …");
+            }
+            None => shortened.push_str(body),
+        }
+        shortened.push_str(ending);
+    }
+    (shortened, true)
 }
 
 /// Turns bytes into text. When the file was cut off, the cut may have gone
@@ -942,6 +984,21 @@ mod tests {
         assert_eq!(text_from(&[b'a', 0xff, b'b'], false), "a\u{fffd}b");
     }
 
+    #[test]
+    fn long_lines_are_cut() {
+        assert_eq!(shorten_lines("short\nlines\n"), ("short\nlines\n".into(), false));
+        let long = "ä".repeat(LINE_LIMIT + 5);
+        let (text, shortened) = shorten_lines(&format!("first\n{long}\nlast"));
+        assert!(shortened);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "first");
+        assert_eq!(lines[1], format!("{} …", "ä".repeat(LINE_LIMIT)));
+        assert_eq!(lines[2], "last");
+        // Exactly at the limit: left alone.
+        let exact = "x".repeat(LINE_LIMIT);
+        assert_eq!(shorten_lines(&exact), (exact.clone(), false));
+    }
+
     fn temp_folder(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("kommander-preview-{}-{name}", std::process::id()));
@@ -963,10 +1020,17 @@ mod tests {
         let (details, content) = load("notes.txt").unwrap();
         assert_eq!(details.name, "notes.txt");
         assert_eq!(details.size, 12);
-        assert!(matches!(content, Content::Text { ref text, cut: false } if text == "hello\nworld\n"));
+        assert!(matches!(
+            content,
+            Content::Text { ref text, cut: false, shortened: false } if text == "hello\nworld\n"
+        ));
 
         let (_, content) = load("big.txt").unwrap();
-        assert!(matches!(content, Content::Text { ref text, cut: true } if text.len() == TEXT_LIMIT));
+        // One enormous line: only its beginning is kept.
+        assert!(matches!(
+            content,
+            Content::Text { ref text, cut: true, shortened: true } if text.chars().count() == LINE_LIMIT + 2
+        ));
 
         // Zero bytes: not shown as text, whatever the name says.
         assert!(matches!(load("fake.txt").unwrap().1, Content::Other(None)));
