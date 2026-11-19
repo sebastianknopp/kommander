@@ -98,6 +98,8 @@ it is not installed", run:
 sudo pacman -S --needed gst-plugins-good gst-libav
 ```
 
+Sound files are played from local folders only, not from network locations.
+
 ### Optional extras
 
 - Preview in a separate window (Preferences > Show Preview In > Window) uses

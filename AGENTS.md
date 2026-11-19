@@ -69,6 +69,10 @@ Module map (`src/`):
 - `ops/transfer.rs` — the copy/move engine (blocking GIO on the worker).
 - `progress.rs` — operations button, list and progress strip.
 - `preview.rs` — F3 preview pane, and the separate window via Sushi (D-Bus).
+  Video plays through GtkVideo; sound through GStreamer's own GstPlay, and
+  only from local files, because GTK's media classes make GStreamer 1.28
+  abort on MP3 files (see the file's header comment). Do not move sound back
+  to GtkMediaFile without testing an .mp3 with an ID3 tag.
 - `preferences.rs` — the Preferences dialog.
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file).
 

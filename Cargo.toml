@@ -18,3 +18,7 @@ futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 sourceview = { version = "0.11", package = "sourceview5" }
 poppler = { version = "0.26", package = "poppler-rs" }
+# Sound in the preview is played with GStreamer's own player; see the note
+# at the top of src/preview.rs for why not with GTK's.
+gst = { version = "0.25", package = "gstreamer" }
+gst_play = { version = "0.25", package = "gstreamer-play" }

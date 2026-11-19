@@ -459,6 +459,14 @@ pub fn build(app: &adw::Application) {
     });
     window.add_controller(keys);
 
+    // Nothing may still be playing when the program ends.
+    let previews = state.previews.clone();
+    app.connect_shutdown(move |_| {
+        for preview in &previews {
+            preview.stop();
+        }
+    });
+
     add_app_actions(app, &window, &state);
     add_window_actions(app, &window, &state);
 

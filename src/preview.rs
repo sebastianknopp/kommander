@@ -3,9 +3,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Nothing here decodes anything itself; it is all existing parts put
-// together: GtkPicture for images, GtkVideo (GStreamer) for video and audio,
-// GtkSourceView for text and code, Poppler for PDF pages. Everything else
-// gets a page with its icon and a few facts.
+// together: GtkPicture for images, GtkVideo (GStreamer) for video, GStreamer's
+// own player (GstPlay) for sound, GtkSourceView for text and code, Poppler
+// for PDF pages. Everything else gets a page with its icon and a few facts.
+//
+// Sound does not go through GTK's media classes on purpose: GTK hands
+// GStreamer the file as a stream, and on that path GStreamer 1.28 aborts the
+// whole program on MP3 files (an assertion in decodebin3). GstPlay opens the
+// file by its path, which works. For the same reason sound is only played
+// from local folders.
 //
 // Reading the file happens on a worker thread (`load`), so a big image or a
 // slow network share never holds up the cursor. Each request gets a number;
@@ -15,6 +21,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
+use futures_channel::mpsc as channel;
+use futures_util::StreamExt;
 use gtk::{cairo, gdk, gio, glib};
 use sourceview::prelude::*;
 
@@ -96,6 +104,23 @@ enum Content {
     Other(Option<String>),
 }
 
+/// What the sound player reports; sent from its callbacks to the main loop.
+enum SoundEvent {
+    /// Length in seconds.
+    Duration(f64),
+    /// Position in seconds.
+    Position(f64),
+    Playing(bool),
+    Ended,
+    Error(String),
+}
+
+/// A sound that is loaded: the player and the hook-up of its signals.
+struct Sound {
+    play: gst_play::Play,
+    _signals: gst_play::PlaySignalAdapter,
+}
+
 pub struct Preview {
     root: gtk::Box,
     title: gtk::Label,
@@ -110,8 +135,14 @@ pub struct Preview {
     info_icon: gtk::Image,
     info_name: gtk::Label,
     info_facts: gtk::Label,
-    /// Play, pause and position for sound files, under their icon.
-    audio_controls: gtk::MediaControls,
+    /// Play/pause, position and time for sound files, under their icon.
+    audio_box: gtk::Box,
+    audio_button: gtk::Button,
+    audio_scale: gtk::Scale,
+    audio_time: gtk::Label,
+    sound: RefCell<Option<Sound>>,
+    sound_playing: Cell<bool>,
+    sound_length: Cell<f64>,
     /// Number of the latest request; older results are ignored.
     generation: Cell<u64>,
     /// The wait before loading, and the load itself, of the latest request.
@@ -189,15 +220,33 @@ impl Preview {
             .margin_start(24)
             .margin_end(24)
             .build();
-        let audio_controls = gtk::MediaControls::builder()
-            .visible(false)
+        let audio_button = gtk::Button::builder()
+            .icon_name("media-playback-pause-symbolic")
+            .tooltip_text("Play or Pause (Ctrl+Space)")
             .focusable(false)
-            .margin_top(12)
+            .css_classes(["flat", "circular"])
             .build();
+        let audio_scale = gtk::Scale::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .hexpand(true)
+            .focusable(false)
+            .build();
+        let audio_time = gtk::Label::builder().css_classes(["dimmed", "caption", "numeric"]).build();
+        let audio_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .width_request(320)
+            .margin_top(12)
+            .visible(false)
+            .build();
+        audio_box.append(&audio_button);
+        audio_box.append(&audio_scale);
+        audio_box.append(&audio_time);
         info.append(&info_icon);
         info.append(&info_name);
         info.append(&info_facts);
-        info.append(&audio_controls);
+        info.append(&audio_box);
 
         let stack = gtk::Stack::builder().vexpand(true).build();
         stack.add_named(&gtk::Box::new(gtk::Orientation::Vertical, 0), Some("empty"));
@@ -235,10 +284,35 @@ impl Preview {
             info_icon,
             info_name,
             info_facts,
-            audio_controls,
+            audio_box,
+            audio_button,
+            audio_scale,
+            audio_time,
+            sound: RefCell::default(),
+            sound_playing: Cell::new(false),
+            sound_length: Cell::new(0.0),
             generation: Cell::new(0),
             delay: RefCell::default(),
             loading: RefCell::default(),
+        });
+
+        // The sound controls.
+        let weak = Rc::downgrade(&preview);
+        preview.audio_button.connect_clicked(move |_| {
+            if let Some(preview) = weak.upgrade() {
+                preview.toggle_playing();
+            }
+        });
+        // Only the user's own dragging seeks; position updates do not.
+        let weak = Rc::downgrade(&preview);
+        preview.audio_scale.connect_change_value(move |_, _, seconds| {
+            if let Some(preview) = weak.upgrade()
+                && let Some(sound) = preview.sound.borrow().as_ref()
+            {
+                let seconds = seconds.clamp(0.0, preview.sound_length.get());
+                sound.play.seek(gst::ClockTime::from_seconds_f64(seconds));
+            }
+            glib::Propagation::Proceed
         });
 
         // Text colours follow light and dark.
@@ -298,11 +372,18 @@ impl Preview {
 
     /// Pauses or resumes the video or sound that is playing, if any.
     pub fn toggle_playing(&self) -> bool {
-        let stream = match self.stack.visible_child_name().as_deref() {
-            Some("media") => self.video.media_stream(),
-            _ => self.audio_controls.media_stream(),
-        };
-        let Some(stream) = stream else {
+        if let Some(sound) = self.sound.borrow().as_ref() {
+            if self.sound_playing.get() {
+                sound.play.pause();
+            } else {
+                sound.play.play();
+            }
+            return true;
+        }
+        if self.stack.visible_child_name().as_deref() != Some("media") {
+            return false;
+        }
+        let Some(stream) = self.video.media_stream() else {
             return false;
         };
         stream.set_playing(!stream.is_playing());
@@ -332,11 +413,11 @@ impl Preview {
     /// Lets go of whatever the pages hold (stops playback, frees pictures).
     fn release(&self) {
         self.video.set_file(gio::File::NONE);
-        if let Some(stream) = self.audio_controls.media_stream() {
-            stream.set_playing(false);
+        if let Some(sound) = self.sound.take() {
+            sound.play.stop();
         }
-        self.audio_controls.set_media_stream(gtk::MediaStream::NONE);
-        self.audio_controls.set_visible(false);
+        self.sound_playing.set(false);
+        self.audio_box.set_visible(false);
         self.picture.set_paintable(gdk::Paintable::NONE);
         self.text_buffer.set_text("");
         while let Some(page) = self.pdf_pages.first_child() {
@@ -366,11 +447,7 @@ impl Preview {
             }
             Content::Audio => {
                 self.show_info(details, &status);
-                let stream = gtk::MediaFile::for_file(file);
-                self.audio_controls.set_media_stream(Some(&stream));
-                self.audio_controls.set_visible(true);
-                self.watch_playback(stream.upcast_ref(), details, &status);
-                stream.play();
+                self.start_sound(file, &status);
                 "info"
             }
             Content::Pdf { pages, total } => {
@@ -451,6 +528,106 @@ impl Preview {
         });
     }
 
+    /// Starts playing the sound file under its icon.
+    fn start_sound(self: &Rc<Self>, file: &gio::File, status: &str) {
+        // See the note at the top of this file.
+        if file.path().is_none() {
+            self.info_facts
+                .set_label(&format!("{status}\nSound is only played from local folders."));
+            return;
+        }
+        if let Err(error) = gst::init() {
+            self.info_facts.set_label(&format!("{status}\n{}", playback_problem(error.message())));
+            return;
+        }
+        let play = gst_play::Play::new(None::<gst_play::PlayVideoRenderer>);
+        // No window for cover pictures.
+        play.set_video_track_enabled(false);
+
+        // The player's callbacks may not touch widgets; they send what
+        // happened to the main loop instead.
+        let (events, mut incoming) = channel::unbounded::<SoundEvent>();
+        let signals = gst_play::PlaySignalAdapter::new(&play);
+        let seconds = |time: Option<gst::ClockTime>| time.map_or(0.0, |time| time.seconds_f64());
+        let sender = events.clone();
+        signals.connect_duration_changed(move |_, duration| {
+            let _ = sender.unbounded_send(SoundEvent::Duration(seconds(duration)));
+        });
+        let sender = events.clone();
+        signals.connect_position_updated(move |_, position| {
+            let _ = sender.unbounded_send(SoundEvent::Position(seconds(position)));
+        });
+        let sender = events.clone();
+        signals.connect_state_changed(move |_, state| {
+            let playing = state == gst_play::PlayState::Playing;
+            let _ = sender.unbounded_send(SoundEvent::Playing(playing));
+        });
+        let sender = events.clone();
+        signals.connect_end_of_stream(move |_| {
+            let _ = sender.unbounded_send(SoundEvent::Ended);
+        });
+        signals.connect_error(move |_, error, _| {
+            let _ = events.unbounded_send(SoundEvent::Error(error.message().to_owned()));
+        });
+
+        let weak = Rc::downgrade(self);
+        let generation = self.generation.get();
+        let status = status.to_owned();
+        glib::spawn_future_local(async move {
+            while let Some(event) = incoming.next().await {
+                let Some(preview) = weak.upgrade() else {
+                    break;
+                };
+                if preview.generation.get() != generation {
+                    break;
+                }
+                preview.sound_event(event, &status);
+            }
+        });
+
+        self.sound_length.set(0.0);
+        self.audio_scale.set_range(0.0, 1.0);
+        self.audio_scale.set_value(0.0);
+        self.audio_time.set_label("");
+        self.audio_box.set_visible(true);
+        play.set_uri(Some(&gio::prelude::FileExt::uri(file)));
+        play.play();
+        self.sound.replace(Some(Sound { play, _signals: signals }));
+    }
+
+    fn sound_event(&self, event: SoundEvent, status: &str) {
+        match event {
+            SoundEvent::Duration(length) => {
+                self.sound_length.set(length);
+                self.audio_scale.set_range(0.0, length.max(0.1));
+                self.audio_time.set_label(&time_text(self.audio_scale.value(), length));
+            }
+            SoundEvent::Position(position) => {
+                self.audio_scale.set_value(position);
+                self.audio_time.set_label(&time_text(position, self.sound_length.get()));
+            }
+            SoundEvent::Playing(playing) => self.set_sound_playing(playing),
+            SoundEvent::Ended => self.set_sound_playing(false),
+            SoundEvent::Error(message) => {
+                if let Some(sound) = self.sound.take() {
+                    sound.play.stop();
+                }
+                self.set_sound_playing(false);
+                self.audio_box.set_visible(false);
+                self.info_facts.set_label(&format!("{status}\n{}", playback_problem(&message)));
+            }
+        }
+    }
+
+    fn set_sound_playing(&self, playing: bool) {
+        self.sound_playing.set(playing);
+        self.audio_button.set_icon_name(if playing {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        });
+    }
+
     fn apply_text_scheme(&self, dark: bool) {
         let name = if dark { "Adwaita-dark" } else { "Adwaita" };
         let scheme = sourceview::StyleSchemeManager::default().scheme(name);
@@ -465,6 +642,15 @@ fn folder_text(items: u64, bytes: u64) -> String {
         1 => format!("1 item · {}", glib::format_size(bytes)),
         n => format!("{n} items · {}", glib::format_size(bytes)),
     }
+}
+
+/// "0:42 / 3:05" (position and length in seconds).
+fn time_text(position: f64, length: f64) -> String {
+    let clock = |seconds: f64| {
+        let seconds = seconds.max(0.0) as u64;
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    };
+    format!("{} / {}", clock(position), clock(length))
 }
 
 /// Why a video or sound does not play, in a line a person can act on.
@@ -737,6 +923,8 @@ mod tests {
         assert_eq!(pdf_pages_text(1, 1), " · 1 page");
         assert_eq!(pdf_pages_text(3, 3), " · 3 pages");
         assert_eq!(pdf_pages_text(10, 240), " · first 10 of 240 pages");
+        assert_eq!(time_text(42.9, 185.0), "0:42 / 3:05");
+        assert_eq!(time_text(0.0, 0.0), "0:00 / 0:00");
         assert_eq!(
             playback_problem("Error from element x\nYour GStreamer installation is missing a plug-in."),
             "Can’t be played here: a GStreamer plugin for it is not installed."
