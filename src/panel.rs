@@ -263,6 +263,17 @@ impl Panel {
         self.root.add_controller(click);
     }
 
+    /// Calls `f` when the path strip is double-clicked (to copy the
+    /// folder's path), anywhere but on an earlier folder's breadcrumb.
+    pub fn connect_path_double_clicked(&self, f: impl Fn() + 'static) {
+        self.path_bar.connect_double_clicked(f);
+    }
+
+    /// Flashes "Copied" in the path strip.
+    pub fn flash_copied(&self) {
+        self.path_bar.flash_copied();
+    }
+
     /// Calls `f` whenever the user sorts by another column or direction.
     pub fn connect_sort_changed(&self, f: impl Fn() + 'static) {
         if let Some(sorter) = self.column_view.sorter() {

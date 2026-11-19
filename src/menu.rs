@@ -6,7 +6,8 @@
 // src/resources/menu/nautilus-files-view-context-menus.ui): opening first,
 // then the clipboard and transfers (Nautilus: Cut, Copy, Move to…, Copy
 // to…), then renaming, Paste Into Folder and deleting; on empty space New
-// Folder and the terminal, then Paste. Items show the key that does the same
+// Folder and the terminal, then Paste. Copy Path (as text) sits with the
+// clipboard items. Items show the key that does the same
 // from the keyboard. The items run through the window (see window.rs,
 // `run_command`), the same way as their keys.
 
@@ -30,6 +31,8 @@ pub enum Command {
     Paste,
     /// Into the clicked folder.
     PasteInto,
+    /// The paths of the files acted on, or of the panel's folder, as text.
+    CopyPath,
     CopyToOther,
     MoveToOther,
     Rename,
@@ -39,7 +42,7 @@ pub enum Command {
     NewFolder,
 }
 
-const COMMANDS: [Command; 16] = [
+const COMMANDS: [Command; 17] = [
     Command::Open,
     Command::OpenWith,
     Command::Preview,
@@ -49,6 +52,7 @@ const COMMANDS: [Command; 16] = [
     Command::Copy,
     Command::Paste,
     Command::PasteInto,
+    Command::CopyPath,
     Command::CopyToOther,
     Command::MoveToOther,
     Command::Rename,
@@ -71,6 +75,7 @@ impl Command {
             Command::Copy => "copy",
             Command::Paste => "paste",
             Command::PasteInto => "paste-into",
+            Command::CopyPath => "copy-path",
             Command::CopyToOther => "copy-to-other",
             Command::MoveToOther => "move-to-other",
             Command::Rename => "rename",
@@ -130,7 +135,12 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
             item("New _Folder…", NewFolder, Some("F7")),
             item("Open Termi_nal Here", Terminal, Some("<Shift>F4")),
         ]);
-        sections.push(vec![item("_Paste", Paste, Some("<Control>v"))]);
+        // No key shown: Ctrl+Shift+C copies the path of the file under
+        // the cursor, the folder's only on "..". (H is Show Hidden Files'.)
+        sections.push(vec![
+            item("_Paste", Paste, Some("<Control>v")),
+            item("Copy Pa_th", CopyPath, None),
+        ]);
         sections.push(vec![Item {
             label: "Show _Hidden Files",
             action: "win.show-hidden".into(),
@@ -156,6 +166,7 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
         item("Cu_t", Cut, Some("<Control>x")),
         item("_Copy", Copy, Some("<Control>c")),
         item("_Paste", Paste, Some("<Control>v")),
+        item("Copy Pat_h", CopyPath, Some("<Shift><Control>c")),
         item("Cop_y to Other Panel", CopyToOther, Some("F5")),
         item("Move to Other P_anel", MoveToOther, Some("F6")),
     ]);
@@ -289,7 +300,7 @@ mod tests {
             labels(context),
             [
                 vec!["_Open", "Open _With…", "P_review", "_Edit"],
-                vec!["Cu_t", "_Copy", "_Paste", "Cop_y to Other Panel", "Move to Other P_anel"],
+                vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                 vec!["Rena_me…", "Mo_ve to Trash", "_Delete Permanently…"],
             ]
         );
@@ -302,7 +313,7 @@ mod tests {
             labels(context),
             [
                 vec!["_Open", "Open _With…", "P_review", "Open Termi_nal Here"],
-                vec!["Cu_t", "_Copy", "_Paste", "Cop_y to Other Panel", "Move to Other P_anel"],
+                vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                 vec!["Rena_me…", "Paste _Into Folder", "Mo_ve to Trash", "_Delete Permanently…"],
                 vec!["Add to _Favourites"],
             ]
@@ -321,7 +332,7 @@ mod tests {
                 labels(context),
                 [
                     vec!["_Open", "P_review"],
-                    vec!["Cu_t", "_Copy", "_Paste", "Cop_y to Other Panel", "Move to Other P_anel"],
+                    vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                     vec!["Mo_ve to Trash", "_Delete Permanently…"],
                 ]
             );
@@ -335,14 +346,17 @@ mod tests {
             labels(context),
             [
                 vec!["New _Folder…", "Open Termi_nal Here"],
-                vec!["_Paste"],
+                vec!["_Paste", "Copy Pa_th"],
                 vec!["Show _Hidden Files"],
             ]
         );
         // Nothing there acts on files: no cutting, renaming or deleting.
         let actions: Vec<String> =
             sections(&context).into_iter().flatten().map(|item| item.action).collect();
-        assert_eq!(actions, ["ctx.new-folder", "ctx.terminal", "ctx.paste", "win.show-hidden"]);
+        assert_eq!(
+            actions,
+            ["ctx.new-folder", "ctx.terminal", "ctx.paste", "ctx.copy-path", "win.show-hidden"]
+        );
     }
 
     #[test]
@@ -373,6 +387,7 @@ mod tests {
         assert_eq!(accel("Cop_y to Other Panel"), Some("F5"));
         assert_eq!(accel("_Delete Permanently…"), Some("<Shift>Delete"));
         assert_eq!(accel("Open _With…"), None);
+        assert_eq!(accel("Copy Pat_h"), Some("<Shift><Control>c"));
         // Every action name is one of the menu's own, or the window's.
         for item in &all {
             let name = item.action.strip_prefix("ctx.").unwrap();

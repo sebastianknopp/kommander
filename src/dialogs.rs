@@ -376,6 +376,9 @@ pub const TRASH_DROP_FROM_PANELS_ONLY: &str =
 /// The toast when Ctrl+V or Paste finds no files on the clipboard (Nautilus's words).
 pub const NOTHING_TO_PASTE: &str = "There is nothing on the clipboard to paste";
 
+/// The pill that flashes in a panel's path strip when a path was copied.
+pub const COPIED: &str = "Copied";
+
 pub const OPEN_WITH_TITLE: &str = "Open With";
 pub const OPEN_WITH_DEFAULT: &str = "Default";
 pub const OPEN_WITH_OTHER_APPS: &str = "Other Apps";

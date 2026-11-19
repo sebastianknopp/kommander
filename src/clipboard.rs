@@ -11,6 +11,10 @@
 // a plain list from another app counts as a copy. After cut files have been
 // pasted, the clipboard is emptied, as Nautilus does. Files cut here or in
 // GNOME Files look cut (dimmed) in the panels until the clipboard changes.
+//
+// Copy Path (Ctrl+Shift+C) puts paths on the clipboard as plain text only,
+// so they never paste as files; like any other clipboard change, that ends
+// the cut look.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -51,6 +55,26 @@ pub fn parse_gnome_copied_files(text: &str) -> Option<(bool, Vec<String>)> {
     };
     let uris = lines.filter(|line| !line.is_empty()).map(String::from).collect();
     Some((cut, uris))
+}
+
+/// The text Copy Path puts on the clipboard for `files`: the ordinary path
+/// of local ones ("/home/user/My Files", neither quoted nor escaped), the
+/// URI of all others ("smb://server/share/folder", "trash:///notes.txt"),
+/// one per line with no newline at the end.
+pub fn path_text(files: &[gio::File]) -> String {
+    let lines: Vec<String> = files
+        .iter()
+        .map(|file| {
+            if file.is_native() {
+                // The path as text; a name that is not valid UTF-8 comes
+                // out as a file:// URI instead (GIO's own choice).
+                file.parse_name().into()
+            } else {
+                file.uri().into()
+            }
+        })
+        .collect();
+    lines.join("\n")
 }
 
 /// What pasting does.
@@ -126,6 +150,12 @@ impl Clipboard {
             gdk::ContentProvider::for_value(&gdk::FileList::from_array(files).to_value()),
         ];
         let _ = self.clipboard.set_content(Some(&gdk::ContentProvider::new_union(&providers)));
+    }
+
+    /// Puts `text` on the clipboard as plain text (Copy Path). Not a file
+    /// format, so Paste does not take it for files.
+    pub fn put_text(&self, text: &str) {
+        self.clipboard.set_text(text);
     }
 
     /// Empties the clipboard (after cut files have been pasted).
@@ -255,6 +285,24 @@ mod tests {
             let text = to_gnome_copied_files(cut, &files);
             assert_eq!(parse_gnome_copied_files(&text), Some((cut, files.clone())));
         }
+    }
+
+    #[test]
+    fn path_text_for_copy_path() {
+        let local = gio::File::for_path("/home/a/Documents");
+        assert_eq!(path_text(std::slice::from_ref(&local)), "/home/a/Documents");
+        // Spaces and other letters stay as they are: no quotes, no %20.
+        let odd = gio::File::for_path("/home/a/My Photos/Grüße 日本");
+        assert_eq!(path_text(std::slice::from_ref(&odd)), "/home/a/My Photos/Grüße 日本");
+        // Elsewhere, the address.
+        let share = gio::File::for_uri("smb://server/share/folder");
+        assert_eq!(path_text(std::slice::from_ref(&share)), "smb://server/share/folder");
+        // One per line, no newline at the end.
+        assert_eq!(
+            path_text(&[local, odd, share]),
+            "/home/a/Documents\n/home/a/My Photos/Grüße 日本\nsmb://server/share/folder"
+        );
+        assert_eq!(path_text(&[]), "");
     }
 
     #[test]

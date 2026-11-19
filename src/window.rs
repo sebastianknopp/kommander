@@ -447,6 +447,18 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         });
     }
 
+    // Double-clicking a panel's path strip copies its folder's path (the
+    // click has made the panel the active one already).
+    for (index, panel) in state.panels.iter().enumerate() {
+        let state_weak = Rc::downgrade(&state);
+        panel.connect_path_double_clicked(move || {
+            if let Some(state) = state_weak.upgrade() {
+                let panel = &state.panels[index];
+                copy_paths(&state, panel, panel.folder().into_iter().collect());
+            }
+        });
+    }
+
     // Right-clicking a panel opens its menu (and makes it the active one).
     for (index, panel) in state.panels.iter().enumerate() {
         let state_weak = Rc::downgrade(&state);
@@ -526,6 +538,22 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             && key.to_lower() == gdk::Key::a
         {
             panel.mark_all(!modifiers.contains(gdk::ModifierType::SHIFT_MASK));
+            return glib::Propagation::Stop;
+        }
+
+        // Ctrl+Shift+C copies the paths of the files acted on as text; on
+        // ".." (or in an empty folder) the folder's own. While searching,
+        // the search field keeps it.
+        if !panel.is_searching()
+            && modifiers & !gdk::ModifierType::LOCK_MASK
+                == gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
+            && key.to_lower() == gdk::Key::c
+        {
+            let mut files = panel.files_to_act_on();
+            if files.is_empty() {
+                files.extend(panel.folder());
+            }
+            copy_paths(&window_state, panel, files);
             return glib::Propagation::Stop;
         }
 
@@ -1427,6 +1455,11 @@ fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, comman
         },
         Command::Cut => state.clipboard.put(&files, true),
         Command::Copy => state.clipboard.put(&files, false),
+        // ".." and empty space: the folder itself.
+        Command::CopyPath if files.is_empty() => {
+            copy_paths(state, panel, panel.folder().into_iter().collect())
+        }
+        Command::CopyPath => copy_paths(state, panel, files),
         Command::Paste => {
             if let Some(folder) = panel.folder() {
                 paste(state, folder);
@@ -1448,6 +1481,16 @@ fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, comman
         }
         Command::NewFolder => new_folder(state, panel),
     }
+}
+
+/// Copy Path: puts the paths of `files` on the clipboard as text and
+/// flashes "Copied" in `panel`'s path strip.
+fn copy_paths(state: &State, panel: &Panel, files: Vec<gio::File>) {
+    if files.is_empty() {
+        return;
+    }
+    state.clipboard.put_text(&clipboard::path_text(&files));
+    panel.flash_copied();
 }
 
 /// Open With…: lets the user choose the app to open `file` with.
@@ -1703,6 +1746,10 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     clipboard.add(adw::ShortcutsItem::new("Cut the files", "<Control>x"));
     clipboard.add(adw::ShortcutsItem::new("Copy the files", "<Control>c"));
     clipboard.add(adw::ShortcutsItem::new("Paste into this folder", "<Control>v"));
+    clipboard.add(adw::ShortcutsItem::new(
+        "Copy the path of the files (on “..”, of this folder)",
+        "<Control><Shift>c",
+    ));
     clipboard.add(adw::ShortcutsItem::new("Open the menu for the file under the cursor", "Menu <Shift>F10"));
 
     let favourites = adw::ShortcutsSection::new(Some("Favourites"));

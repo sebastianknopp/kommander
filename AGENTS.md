@@ -81,7 +81,8 @@ Module map (`src/`):
   afterwards, in the background: local drives only, at most 300 per folder,
   4 at a time, cancelled when the panel leaves; the answer is kept in the
   listing and just that row's icon changes.
-- `pathbar.rs` — the breadcrumbs.
+- `pathbar.rs` — the breadcrumbs; a double-click on the strip asks to copy
+  the folder's path, and the "Copied" pill that then flashes over it.
 - `marks.rs` — the set of marked files per panel (by URI).
 - `fkeybar.rs` — the function-key bar at the bottom.
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
