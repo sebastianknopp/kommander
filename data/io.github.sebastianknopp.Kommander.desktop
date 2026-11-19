@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Der Kommander
+Name=Kommander
 GenericName=File Manager
 Comment=Browse and manage files in two panels
 Exec=kommander

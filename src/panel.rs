@@ -1,4 +1,5 @@
-// One panel: the current folder's path on top and its file list below.
+// One panel: the current folder's path on top, its file list, and a status
+// line at the bottom.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::cell::{Cell, RefCell};
@@ -9,9 +10,6 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
-/// Icon size in the Name column (Nautilus's default list zoom level).
-const ICON_SIZE: i32 = 24;
-
 /// File attributes the list needs; GtkDirectoryList adds "standard::file".
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
 standard::icon,standard::size,standard::is-hidden,standard::is-backup,time::modified";
@@ -19,6 +17,7 @@ standard::icon,standard::size,standard::is-hidden,standard::is-backup,time::modi
 pub struct Panel {
     root: gtk::Box,
     path_label: gtk::Label,
+    status_label: gtk::Label,
     column_view: gtk::ColumnView,
     dir_list: gtk::DirectoryList,
     selection: gtk::SingleSelection,
@@ -68,6 +67,12 @@ impl Panel {
             .css_classes(["path-label"])
             .build();
 
+        let status_label = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["status-line", "dimmed", "caption", "numeric"])
+            .build();
+
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .hexpand(true)
@@ -75,10 +80,12 @@ impl Panel {
             .build();
         root.append(&path_label);
         root.append(&scrolled);
+        root.append(&status_label);
 
         let panel = Rc::new(Panel {
             root,
             path_label,
+            status_label,
             column_view,
             dir_list,
             selection,
@@ -145,6 +152,28 @@ impl Panel {
                 panel.place_cursor();
             }
         });
+
+        // Keep the status line up to date while the folder loads or changes.
+        let weak = Rc::downgrade(self);
+        self.selection.connect_items_changed(move |_, _, _, _| {
+            if let Some(panel) = weak.upgrade() {
+                panel.update_status();
+            }
+        });
+    }
+
+    fn update_status(&self) {
+        let count = self.selection.n_items();
+        let mut file_bytes = 0u64;
+        let mut has_files = false;
+        for info in (0..count).filter_map(|i| self.entry(i)) {
+            if info.file_type() != gio::FileType::Directory {
+                has_files = true;
+                file_bytes += info.size().max(0) as u64;
+            }
+        }
+        self.status_label
+            .set_label(&status_text(count, has_files.then_some(file_bytes)));
     }
 
     /// Shows `folder`; once loaded, the cursor goes to the entry named
@@ -185,6 +214,20 @@ impl Panel {
 
     fn entry(&self, position: u32) -> Option<gio::FileInfo> {
         self.selection.item(position).and_downcast()
+    }
+}
+
+/// The status line text, e.g. "14 items · 10.3 MB". `file_bytes` is the total
+/// size of the files (folders are not counted), or None if there are no files.
+fn status_text(count: u32, file_bytes: Option<u64>) -> String {
+    let items = if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    };
+    match file_bytes {
+        Some(bytes) => format!("{items} · {}", glib::format_size(bytes)),
+        None => items,
     }
 }
 
@@ -229,7 +272,8 @@ fn name_column() -> gtk::ColumnViewColumn {
     let column = column(
         "Name",
         || {
-            let icon = gtk::Image::builder().pixel_size(ICON_SIZE).build();
+            // Its size comes from style.css, so it can change live.
+            let icon = gtk::Image::new();
             let label = gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::Middle)

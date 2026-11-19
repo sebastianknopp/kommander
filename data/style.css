@@ -1,4 +1,4 @@
-/* Der Kommander stylesheet, loaded on top of libadwaita.
+/* Kommander stylesheet, loaded on top of libadwaita.
  * Colours come only from libadwaita's named colours (CSS variables), so
  * light and dark mode follow the system automatically.
  * The file list styling follows Nautilus's list view (GPL-3.0-or-later). */
@@ -8,15 +8,45 @@
   border-left: 1px solid var(--border-color);
 }
 
-/* Path above each file list (to be replaced by breadcrumbs). */
+/* Path strip above each file list (to be replaced by breadcrumbs).
+ * Inactive panel: flat with dimmed text. Active panel: accent-tinted strip
+ * with full-strength text, so the active side reads at a glance. */
 .panel .path-label {
-  padding: 9px 18px 3px 18px;
+  padding: 8px 18px;
   font-weight: bold;
-  opacity: 0.55;
+  color: color-mix(in srgb, var(--window-fg-color) 55%, transparent);
+  border-bottom: 1px solid transparent;
 }
 
 .panel.active .path-label {
-  opacity: 1;
+  color: var(--window-fg-color);
+  background-color: color-mix(in srgb, var(--accent-color) 22%, var(--view-bg-color));
+  border-bottom-color: color-mix(in srgb, var(--accent-color) 40%, var(--view-bg-color));
+}
+
+/* Status line at the bottom of each panel. */
+.panel .status-line {
+  padding: 5px 18px 6px 18px;
+}
+
+/* Function-key bar along the bottom of the window. */
+.fkeybar {
+  padding: 4px 6px;
+}
+
+.fkeybar button {
+  padding: 4px 8px;
+  font-weight: normal;
+}
+
+.fkeybar .keycap {
+  font-size: smaller;
+  font-weight: bold;
+  padding: 0 5px;
+  border-radius: 5px;
+  min-width: 14px;
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, currentColor 15%, transparent);
 }
 
 /* --- File list, modelled on Nautilus's list view --- */
@@ -52,6 +82,19 @@
   padding: 4px 6px;
 }
 
+/* Icon size: "Normal" is Nautilus's default list zoom, "Small" its smallest. */
+.panel .file-cell > image {
+  -gtk-icon-size: 24px;
+}
+
+.panels.small-icons .panel .file-cell {
+  padding: 3px 6px;
+}
+
+.panels.small-icons .panel .file-cell > image {
+  -gtk-icon-size: 16px;
+}
+
 /* The cursor is the selected row, so the extra focus outline is redundant. */
 .panel columnview > listview > row:focus-visible {
   outline: none;
@@ -62,4 +105,9 @@
 .panel:not(.active) columnview > listview {
   --accent-bg-color: color-mix(in srgb, var(--window-fg-color) 45%, var(--view-bg-color));
   --accent-color: var(--window-fg-color);
+}
+
+/* About dialog: the Superstau quote that replaces the three cars. */
+.superstau-quote {
+  font-style: italic;
 }
