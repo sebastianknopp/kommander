@@ -945,7 +945,7 @@ impl Panel {
         self.open(folder, None);
     }
 
-    // (See `for_other_apps` for how files on network shares are handed over.)
+    // (See `uri_for_other_apps` for how files on network shares are handed over.)
 
     /// Opens the entry at `position`: folders in the panel, files with their
     /// default app, ".." goes to the parent folder.
@@ -970,17 +970,46 @@ impl Panel {
         let root = self.root.clone();
         let name = info.display_name();
         let context = self.root.display().app_launch_context();
-        gio::AppInfo::launch_default_for_uri_async(
-            &for_other_apps(&file).uri(),
-            Some(&context),
-            gio::Cancellable::NONE,
-            move |result| {
-                if let Err(error) = result {
-                    eprintln!("Could not open {name}: {error}");
-                    toast(&root, &format!("Could not open “{name}”"));
-                }
-            },
-        );
+        if file.is_native() {
+            gio::AppInfo::launch_default_for_uri_async(
+                &file.uri(),
+                Some(&context),
+                gio::Cancellable::NONE,
+                move |result| {
+                    if let Err(error) = result {
+                        eprintln!("Could not open {name}: {error}");
+                        toast(&root, &format!("Could not open “{name}”"));
+                    }
+                },
+            );
+            return;
+        }
+        // A file on a network share or the like. Asking GIO for "the default
+        // app" there gives whatever handles smb:// links, not the video
+        // player. So the app is chosen by the kind of file, as for local
+        // files, and gets the address from `uri_for_other_apps`.
+        glib::spawn_future_local(async move {
+            let opened = async {
+                let info = file
+                    .query_info_future(
+                        "standard::content-type",
+                        gio::FileQueryInfoFlags::NONE,
+                        glib::Priority::DEFAULT,
+                    )
+                    .await?;
+                let app = info
+                    .content_type()
+                    .and_then(|content_type| gio::AppInfo::default_for_type(&content_type, false))
+                    .ok_or_else(|| {
+                        glib::Error::new(gio::IOErrorEnum::NotFound, "No application for this kind of file")
+                    })?;
+                app.launch_uris(&[uri_for_other_apps(&file).as_str()], Some(&context))
+            };
+            if let Err(error) = opened.await {
+                eprintln!("Could not open {name}: {error}");
+                toast(&root, &format!("Could not open “{name}”: {}", error.message()));
+            }
+        });
     }
 
     /// Opens the file under the cursor in the default text editor (F4).
@@ -1000,7 +1029,7 @@ impl Panel {
             return;
         };
         let context = self.root.display().app_launch_context();
-        if let Err(error) = editor.launch(&[for_other_apps(&file)], Some(&context)) {
+        if let Err(error) = editor.launch_uris(&[uri_for_other_apps(&file).as_str()], Some(&context)) {
             eprintln!("Could not edit {}: {error}", info.display_name());
             toast(
                 &self.root,
@@ -1604,16 +1633,22 @@ fn is_parent_entry(info: &gio::FileInfo) -> bool {
     info.boolean(PARENT_ENTRY)
 }
 
-/// `file` the way another program should get it. Many programs (mpv, for
-/// one) cannot open addresses like smb://server/share/film.mp4 themselves.
-/// For files on network shares and the like, GIO also offers an ordinary
-/// path (under /run/user/…/gvfs); if there is one, that is handed over
-/// instead, and any program can open it.
-pub fn for_other_apps(file: &gio::File) -> gio::File {
-    if file.is_native() {
-        return file.clone();
+/// The address of `file` to hand to another program. Many programs (mpv,
+/// for one) cannot open addresses like smb://server/share/film.mp4
+/// themselves. For files on network shares and the like, GIO also offers an
+/// ordinary path (under /run/user/…/gvfs); if there is one, its file://
+/// address is handed over instead, and any program can open it.
+///
+/// The address is built as text on purpose: turning that path back into a
+/// `gio::File` gives the smb:// file again.
+pub fn uri_for_other_apps(file: &gio::File) -> glib::GString {
+    if !file.is_native()
+        && let Some(path) = file.path()
+        && let Ok(uri) = glib::filename_to_uri(&path, None)
+    {
+        return uri;
     }
-    file.path().map_or_else(|| file.clone(), gio::File::for_path)
+    file.uri()
 }
 
 pub fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
