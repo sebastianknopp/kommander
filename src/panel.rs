@@ -21,10 +21,12 @@ use gtk::{gdk, gio, glib};
 
 use crate::dnd::{self, DropCheck, Hover};
 use crate::listings::{self, Listing, Listings, TypeLookup};
+use crate::location::Location;
 use crate::marks::Marks;
 use crate::ops::transfer::Kind;
 use crate::pathbar::PathBar;
 use crate::settings::{Sort, SortColumn};
+use crate::start::Target;
 
 /// After this long without the new folder ready, the status line says so.
 const LOADING_NOTICE: Duration = Duration::from_millis(300);
@@ -35,6 +37,8 @@ const PARENT_ENTRY: &str = "kommander::parent-entry";
 pub struct Panel {
     root: gtk::Box,
     path_bar: Rc<PathBar>,
+    /// The field for typing a path (Ctrl+L), in the breadcrumbs' place.
+    location: Rc<Location>,
     status_label: gtk::Label,
     search_bar: gtk::Box,
     search_entry: gtk::SearchEntry,
@@ -171,6 +175,7 @@ impl Panel {
             .build();
 
         let path_bar = PathBar::new();
+        let location = Location::new(path_bar.widget());
 
         let status_label = gtk::Label::builder()
             .xalign(0.0)
@@ -193,7 +198,7 @@ impl Panel {
             .hexpand(true)
             .css_classes(["panel"])
             .build();
-        root.append(path_bar.widget());
+        root.append(location.widget());
         root.append(&scrolled);
         root.append(&search_bar);
         root.append(&status_label);
@@ -201,6 +206,7 @@ impl Panel {
         let panel = Rc::new(Panel {
             root,
             path_bar,
+            location,
             status_label,
             search_bar,
             search_entry,
@@ -336,6 +342,24 @@ impl Panel {
         self.path_bar.connect_clicked(move |folder| {
             if let Some(panel) = weak.upgrade() {
                 panel.open_ancestor(folder);
+            }
+        });
+
+        // The path typed with Ctrl+L: Enter goes there (a file: to its
+        // folder, cursor on it); Enter or Escape gives the list the keys back.
+        let weak = Rc::downgrade(self);
+        self.location.connect_done(move |target| {
+            if let Some(panel) = weak.upgrade() {
+                panel.focus();
+                if let Some(target) = target {
+                    panel.go_to_target(target);
+                }
+            }
+        });
+        let root = self.root.downgrade();
+        self.location.connect_report(move |text| {
+            if let Some(root) = root.upgrade() {
+                toast(&root, text);
             }
         });
 
@@ -910,6 +934,34 @@ impl Panel {
     /// given on the command line).
     pub fn go_to_file(self: &Rc<Self>, folder: &gio::File, name: PathBuf) {
         self.open(folder, Some(name));
+    }
+
+    /// Goes to `target`: into its folder, with the cursor on its file if
+    /// it is one (a file given on the command line or typed as a path).
+    pub fn go_to_target(self: &Rc<Self>, target: &Target) {
+        match target.cursor_on() {
+            Some(name) => self.go_to_file(target.folder(), name),
+            None => self.go_to(target.folder()),
+        }
+    }
+
+    // --- Typing a path (Ctrl+L, see location.rs) ---
+
+    /// Ctrl+L: the breadcrumbs become a field holding the current location.
+    pub fn edit_location(&self) {
+        if let Some(folder) = self.folder() {
+            self.location.open(&folder);
+        }
+    }
+
+    pub fn is_typing_path(&self) -> bool {
+        self.location.is_open()
+    }
+
+    /// A key pressed while the path field is open: it gets them all,
+    /// except the few that steer it (see `Location::key`).
+    pub fn location_key(&self, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+        self.location.key(key, modifiers)
     }
 
     /// Calls `f` whenever the panel goes to another folder.

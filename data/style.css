@@ -69,6 +69,13 @@
   padding: 0 1px;
 }
 
+/* The field for typing a path (Ctrl+L) in the breadcrumbs' place: as high
+ * as the breadcrumbs, so nothing below moves when it opens. */
+.path-strip.location-strip entry {
+  min-height: 28px;
+  font-weight: normal;
+}
+
 /* Type-to-search field, docked at the bottom of the panel in place of the
  * status line. */
 .panel .search-bar {

@@ -138,6 +138,14 @@ impl State {
         }
     }
 
+    /// A path is being typed in the active panel (Ctrl+L). The keys of
+    /// the window's accelerators (Ctrl+H, Ctrl+D, F4, Shift+F4) reach
+    /// their actions before the key handler sees them, so those actions
+    /// check this themselves.
+    fn typing_path(&self) -> bool {
+        self.panels[self.active.get()].is_typing_path()
+    }
+
     /// Saves the settings, together with each panel's folder and sort order.
     fn save_settings(&self) {
         let mut settings = self.settings.borrow_mut();
@@ -213,11 +221,7 @@ fn not_opened(file: &gio::File, error: &glib::Error) -> String {
 impl State {
     /// Panel `index` goes to `target`'s folder, cursor on its file if any.
     fn go_to_target(&self, index: usize, target: &Target) {
-        let panel = &self.panels[index];
-        match target.cursor_on() {
-            Some(name) => panel.go_to_file(target.folder(), name),
-            None => panel.go_to(target.folder()),
-        }
+        self.panels[index].go_to_target(target);
     }
 }
 
@@ -482,6 +486,21 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         }
         let active = window_state.active.get();
         let panel = &window_state.panels[active];
+
+        // While a path is being typed (Ctrl+L), the field has the keys:
+        // none of the panel's keys below may act, and Ctrl+C/X/V/A edit
+        // the text.
+        if panel.is_typing_path() {
+            return panel.location_key(key, modifiers);
+        }
+        // Ctrl+L: type a path, as in GNOME Files (also from the sidebar).
+        if modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+            && key.to_lower() == gdk::Key::l
+        {
+            panel.close_search();
+            panel.edit_location();
+            return glib::Propagation::Stop;
+        }
 
         // Ctrl+Space pauses or resumes the video or sound in the preview.
         if !panel.is_searching()
@@ -855,6 +874,9 @@ fn add_window_actions(
             let Some(state) = state_weak.upgrade() else {
                 return;
             };
+            if state.typing_path() {
+                return;
+            }
             let show = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
             action.set_state(&show.to_variant());
             for panel in &state.panels {
@@ -872,6 +894,7 @@ fn add_window_actions(
         .activate(move |_, _, _| {
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
+                && !state.typing_path()
             {
                 state.panels[state.active.get()].edit();
             }
@@ -884,6 +907,7 @@ fn add_window_actions(
         .activate(move |_, _, _| {
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
+                && !state.typing_path()
             {
                 state.panels[state.active.get()].open_terminal();
             }
@@ -925,6 +949,7 @@ fn add_window_actions(
                 return;
             };
             if window.visible_dialog().is_none()
+                && !state.typing_path()
                 && let Some(folder) = state.panels[state.active.get()].folder()
             {
                 state.sidebar.add_folder(&folder);
@@ -1697,6 +1722,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
     panels.add(adw::ShortcutsItem::new("Open folder or file", "Return"));
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
+    panels.add(adw::ShortcutsItem::new("Type a path to go to", "<Control>l"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
 
     let clipboard = adw::ShortcutsSection::new(Some("Clipboard and Menu"));
