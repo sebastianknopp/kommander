@@ -64,7 +64,11 @@ Module map (`src/`):
 - `listings.rs` — one folder's listing (read in the background), the
   recently visited folders both panels share (local ones kept up to date by
   GTK, others read again on return), and file icons by name (no file is
-  opened to pick an icon).
+  opened to pick an icon). Only files whose name tells nothing (".bashrc",
+  scripts or pictures without extension) get their real type looked up
+  afterwards, in the background: local drives only, at most 300 per folder,
+  4 at a time, cancelled when the panel leaves; the answer is kept in the
+  listing and just that row's icon changes.
 - `pathbar.rs` — the breadcrumbs.
 - `marks.rs` — the set of marked files per panel (by URI).
 - `fkeybar.rs` — the function-key bar at the bottom.

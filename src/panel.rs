@@ -20,7 +20,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::dnd::{self, DropCheck, Hover};
-use crate::listings::{self, Listing, Listings};
+use crate::listings::{self, Listing, Listings, TypeLookup};
 use crate::marks::Marks;
 use crate::ops::transfer::Kind;
 use crate::pathbar::PathBar;
@@ -45,6 +45,8 @@ pub struct Panel {
     listing: RefCell<Option<Rc<Listing>>>,
     /// The listings remembered for both panels.
     listings: Rc<Listings>,
+    /// The real types of the shown files being looked up (for their icons).
+    type_lookup: RefCell<Option<TypeLookup>>,
     /// The start of the file list: the shown listing's files, less the
     /// hidden ones. Its source is what changes when the folder does.
     visible: gtk::FilterListModel,
@@ -206,6 +208,7 @@ impl Panel {
             columns,
             listing: RefCell::default(),
             listings,
+            type_lookup: RefCell::default(),
             visible,
             pending: RefCell::default(),
             trip: Cell::new(0),
@@ -779,6 +782,7 @@ impl Panel {
         }
         self.listing.replace(Some(listing.clone()));
         self.visible.set_model(Some(listing.model()));
+        self.look_up_types(listing);
         self.place_cursor(cursor_on);
         self.path_bar.set_location(&folder);
         self.update_status();
@@ -871,6 +875,7 @@ impl Panel {
         let on = self.cursor_entry().map(|info| info.name());
         self.listing.replace(Some(fresh.clone()));
         self.visible.set_model(Some(fresh.model()));
+        self.look_up_types(fresh);
         self.listings.keep(fresh);
         let position = on.and_then(|name| self.position_of(&name)).unwrap_or(0);
         if position < self.selection.n_items() {
@@ -879,6 +884,16 @@ impl Panel {
             select_row(&self.column_view, position, focus);
         }
         self.update_status();
+    }
+
+    /// Starts looking up the real types of `listing`'s files that their
+    /// names say nothing about, stopping the lookup for the folder shown
+    /// before; each answer changes just that row's icon.
+    fn look_up_types(&self, listing: &Rc<Listing>) {
+        self.type_lookup.replace(None);
+        let marked = self.marked.clone();
+        let lookup = listing.look_up_types(move |info| marked.show_icon(info));
+        self.type_lookup.replace(lookup);
     }
 
     /// Goes to `folder` (from the favourites sidebar), cursor on the first
@@ -924,6 +939,8 @@ impl Panel {
         self.open(folder, None);
     }
 
+    // (See `for_other_apps` for how files on network shares are handed over.)
+
     /// Opens the entry at `position`: folders in the panel, files with their
     /// default app, ".." goes to the parent folder.
     fn activate(self: &Rc<Self>, position: u32) {
@@ -948,7 +965,7 @@ impl Panel {
         let name = info.display_name();
         let context = self.root.display().app_launch_context();
         gio::AppInfo::launch_default_for_uri_async(
-            &file.uri(),
+            &for_other_apps(&file).uri(),
             Some(&context),
             gio::Cancellable::NONE,
             move |result| {
@@ -977,7 +994,7 @@ impl Panel {
             return;
         };
         let context = self.root.display().app_launch_context();
-        if let Err(error) = editor.launch(&[file], Some(&context)) {
+        if let Err(error) = editor.launch(&[for_other_apps(&file)], Some(&context)) {
             eprintln!("Could not edit {}: {error}", info.display_name());
             toast(
                 &self.root,
@@ -1473,6 +1490,18 @@ fn is_parent_entry(info: &gio::FileInfo) -> bool {
     info.boolean(PARENT_ENTRY)
 }
 
+/// `file` the way another program should get it. Many programs (mpv, for
+/// one) cannot open addresses like smb://server/share/film.mp4 themselves.
+/// For files on network shares and the like, GIO also offers an ordinary
+/// path (under /run/user/…/gvfs); if there is one, that is handed over
+/// instead, and any program can open it.
+pub fn for_other_apps(file: &gio::File) -> gio::File {
+    if file.is_native() {
+        return file.clone();
+    }
+    file.path().map_or_else(|| file.clone(), gio::File::for_path)
+}
+
 pub fn entry_file(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast()
 }
@@ -1519,6 +1548,19 @@ impl MarkedCells {
             }
             None => false,
         });
+    }
+
+    /// Shows `info`'s icon again in its row, if the row is on screen (after
+    /// its real type was found). Nothing else in the list changes.
+    fn show_icon(&self, info: &gio::FileInfo) {
+        for cell in self.cells.borrow().iter().filter_map(|cell| cell.upgrade()) {
+            if cell.item().as_ref() == Some(info.upcast_ref())
+                && let Some(icon) =
+                    cell.child().and_then(|child| child.first_child()).and_downcast::<gtk::Image>()
+            {
+                icon.set_from_gicon(&listings::icon_for(info));
+            }
+        }
     }
 
     /// The list position of the row `widget` (or one of its ancestors) belongs to.

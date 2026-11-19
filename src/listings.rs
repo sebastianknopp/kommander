@@ -14,8 +14,12 @@
 // ("standard::fast-content-type"), so reading a folder never opens its
 // files; GIO's "standard::icon" would open every file whose name says
 // nothing about its type, which is slow on large folders and network shares.
+// Those few files (".bashrc", a script or picture without an extension) get
+// their real type looked up afterwards, once the folder is on screen (see
+// `Listing::look_up_types`).
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -32,6 +36,14 @@ const REMEMBERED: usize = 16;
 /// Folders with more files than this are not remembered (memory).
 const LARGEST_REMEMBERED: u32 = 20_000;
 
+/// At most this many files per folder get their real type looked up, so a
+/// folder of thousands of files without extensions does not mean thousands
+/// of files opened.
+const MOST_LOOKED_UP: u32 = 300;
+
+/// How many of those lookups run at the same time.
+const LOOKUPS_AT_ONCE: u32 = 4;
+
 /// The files of one folder.
 pub struct Listing {
     list: gtk::DirectoryList,
@@ -41,6 +53,8 @@ pub struct Listing {
     /// The folder's identity on its drive ("id::file"), to recognise a
     /// folder deleted and made anew, or replaced by another one.
     identity: RefCell<Option<String>>,
+    /// How many files have had their real type looked up (`MOST_LOOKED_UP`).
+    looked_up: Cell<u32>,
 }
 
 impl Listing {
@@ -49,7 +63,12 @@ impl Listing {
         let list = gtk::DirectoryList::new(Some(ATTRIBUTES), Some(folder));
         let local = folder.is_native();
         let listing =
-            Rc::new(Listing { list, watched: Cell::new(local), identity: RefCell::default() });
+            Rc::new(Listing {
+            list,
+            watched: Cell::new(local),
+            identity: RefCell::default(),
+            looked_up: Cell::new(0),
+        });
         if local {
             let weak = Rc::downgrade(&listing);
             let folder = folder.clone();
@@ -125,6 +144,162 @@ impl Listing {
                 _ => true,
             }
     }
+
+    /// Looks up, in the background, the real type of the files whose name
+    /// says nothing about it (by reading their start, as GIO's
+    /// "standard::icon" did), also of files added or changed later, and
+    /// calls `found` with each entry whose icon has changed. The answer is
+    /// kept in the entry, so a remembered folder keeps its icons. Only on
+    /// local drives: reading files over the network is what made listings
+    /// slow. Stops when the returned lookup is dropped (the panel left).
+    pub fn look_up_types(
+        self: &Rc<Self>,
+        found: impl Fn(&gio::FileInfo) + 'static,
+    ) -> Option<TypeLookup> {
+        if !self.folder().is_native() || !self.is_watched() {
+            return None;
+        }
+        let lookup = Rc::new(Lookup {
+            listing: Rc::downgrade(self),
+            queue: RefCell::default(),
+            running: Cell::new(0),
+            cancellable: gio::Cancellable::new(),
+            found: Box::new(found),
+        });
+        lookup.add(&self.list, 0, self.list.n_items());
+        let weak = Rc::downgrade(&lookup);
+        let handler = self.list.connect_items_changed(move |list, position, _, added| {
+            if let Some(lookup) = weak.upgrade() {
+                lookup.add(list, position, added);
+            }
+        });
+        Some(TypeLookup { lookup, model: self.list.clone(), handler: Some(handler) })
+    }
+}
+
+/// The lookup of real types for a panel showing a listing; dropping it
+/// cancels what is still under way, and no late answer reaches the panel.
+pub struct TypeLookup {
+    lookup: Rc<Lookup>,
+    model: gtk::DirectoryList,
+    handler: Option<glib::SignalHandlerId>,
+}
+
+impl Drop for TypeLookup {
+    fn drop(&mut self) {
+        self.lookup.cancellable.cancel();
+        self.lookup.queue.borrow_mut().clear();
+        if let Some(handler) = self.handler.take() {
+            self.model.disconnect(handler);
+        }
+    }
+}
+
+struct Lookup {
+    listing: std::rc::Weak<Listing>,
+    /// Entries waiting for their turn.
+    queue: RefCell<VecDeque<gio::FileInfo>>,
+    /// Lookups under way.
+    running: Cell<u32>,
+    cancellable: gio::Cancellable,
+    found: Box<dyn Fn(&gio::FileInfo)>,
+}
+
+impl Lookup {
+    /// Queues the entries of `list` from `position` on (`count` of them)
+    /// that need their type looked up.
+    fn add(self: &Rc<Self>, list: &gtk::DirectoryList, position: u32, count: u32) {
+        let entries = (position..position + count)
+            .filter_map(|i| list.item(i).and_downcast::<gio::FileInfo>())
+            .filter(needs_lookup);
+        self.queue.borrow_mut().extend(entries);
+        self.next();
+    }
+
+    /// Starts lookups from the queue while there is room.
+    fn next(self: &Rc<Self>) {
+        let Some(listing) = self.listing.upgrade() else {
+            return;
+        };
+        while may_start(self.running.get(), listing.looked_up.get())
+            && !self.cancellable.is_cancelled()
+        {
+            let Some(info) = self.queue.borrow_mut().pop_front() else {
+                return;
+            };
+            if !needs_lookup(&info) {
+                // The other panel, in the same folder, found it meanwhile.
+                if has_known_type(&info) {
+                    (self.found)(&info);
+                }
+                continue;
+            }
+            let Some(file) = info.attribute_object("standard::file").and_downcast::<gio::File>()
+            else {
+                continue;
+            };
+            listing.looked_up.set(listing.looked_up.get() + 1);
+            self.running.set(self.running.get() + 1);
+            let lookup = self.clone();
+            // Without NOFOLLOW_SYMLINKS a link gets its target's type, as
+            // it did with "standard::icon".
+            file.query_info_async(
+                gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+                gio::FileQueryInfoFlags::NONE,
+                glib::Priority::LOW,
+                Some(&self.cancellable),
+                move |result| {
+                    lookup.running.set(lookup.running.get() - 1);
+                    if lookup.cancellable.is_cancelled() {
+                        // Not looked up after all: another visit may.
+                        if let Some(listing) = lookup.listing.upgrade() {
+                            listing.looked_up.set(listing.looked_up.get().saturating_sub(1));
+                        }
+                        return;
+                    }
+                    // Unreadable files stay unknown and are not asked again.
+                    let content_type = result
+                        .ok()
+                        .and_then(|answer| answer.content_type())
+                        .unwrap_or_else(|| "application/octet-stream".into());
+                    // Entries read from a folder only take the attributes
+                    // asked for, unless told otherwise.
+                    info.unset_attribute_mask();
+                    info.set_attribute_string(
+                        gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+                        &content_type,
+                    );
+                    if has_known_type(&info) {
+                        (lookup.found)(&info);
+                    }
+                    lookup.next();
+                },
+            );
+        }
+    }
+}
+
+/// Whether the entry is a file (not a folder) whose type its name does not
+/// tell and that has not been looked up yet.
+fn needs_lookup(info: &gio::FileInfo) -> bool {
+    info.file_type() != gio::FileType::Directory
+        && !info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_ICON)
+        && !info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        && info
+            .attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE)
+            .is_some_and(|content_type| gio::content_type_is_unknown(&content_type))
+}
+
+/// Whether a lookup found the entry's real type.
+fn has_known_type(info: &gio::FileInfo) -> bool {
+    info.attribute_string(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        .is_some_and(|content_type| !gio::content_type_is_unknown(&content_type))
+}
+
+/// Whether another lookup may start, with `running` under way and
+/// `looked_up` done or started in this folder so far.
+fn may_start(running: u32, looked_up: u32) -> bool {
+    running < LOOKUPS_AT_ONCE && looked_up < MOST_LOOKED_UP
 }
 
 /// The remembered listings, shared by both panels.
@@ -217,7 +392,8 @@ impl<V: Clone> Recent<V> {
 
 /// The icon to show for a file in the list. An icon the entry carries
 /// itself (the ".." row) wins; the user's special folders get theirs;
-/// everything else gets the icon of the type its name suggests.
+/// everything else gets the icon of its type: the real one once looked up
+/// (`Listing::look_up_types`), until then the one its name suggests.
 pub fn icon_for(info: &gio::FileInfo) -> gio::Icon {
     if info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_ICON)
         && let Some(icon) = info.icon()
@@ -242,7 +418,12 @@ pub fn icon_for(info: &gio::FileInfo) -> gio::Icon {
             gio::ThemedIcon::new(name).upcast()
         };
     }
-    match info.attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE) {
+    let looked_up = info
+        .attribute_string(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        .filter(|content_type| !gio::content_type_is_unknown(content_type));
+    match looked_up
+        .or_else(|| info.attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE))
+    {
         Some(content_type) => gio::content_type_get_icon(&content_type),
         None => gio::ThemedIcon::new("text-x-generic").upcast(),
     }
@@ -363,5 +544,42 @@ mod tests {
         let unknown = gio::FileInfo::new();
         unknown.set_file_type(gio::FileType::Regular);
         assert_eq!(names(icon_for(&unknown))[0], "text-x-generic");
+    }
+
+    #[test]
+    fn only_files_of_unknown_type_are_looked_up() {
+        let entry = |kind, fast: &str| {
+            let info = gio::FileInfo::new();
+            info.set_file_type(kind);
+            info.set_attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE, fast);
+            info
+        };
+        let unknown = "application/octet-stream";
+        assert!(needs_lookup(&entry(gio::FileType::Regular, unknown)));
+        assert!(needs_lookup(&entry(gio::FileType::SymbolicLink, unknown)));
+        assert!(!needs_lookup(&entry(gio::FileType::Regular, "text/plain")));
+        assert!(!needs_lookup(&entry(gio::FileType::Directory, unknown)));
+        assert!(!needs_lookup(&gio::FileInfo::new()));
+        // Once looked up, never again, even if still unknown.
+        let info = entry(gio::FileType::Regular, unknown);
+        info.set_attribute_string(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE, unknown);
+        assert!(!needs_lookup(&info));
+        assert!(!has_known_type(&info));
+        let names = |icon: gio::Icon| icon.downcast::<gio::ThemedIcon>().unwrap().names();
+        let generic = names(icon_for(&info));
+        // A type found wins over the name's guess.
+        info.set_attribute_string(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE, "image/png");
+        assert!(has_known_type(&info));
+        assert!(names(icon_for(&info)).iter().any(|name| name == "image-png"));
+        assert!(!generic.iter().any(|name| name == "image-png"));
+    }
+
+    #[test]
+    fn lookups_are_limited() {
+        assert!(may_start(0, 0));
+        assert!(may_start(LOOKUPS_AT_ONCE - 1, 0));
+        assert!(!may_start(LOOKUPS_AT_ONCE, 0));
+        assert!(may_start(0, MOST_LOOKED_UP - 1));
+        assert!(!may_start(0, MOST_LOOKED_UP));
     }
 }
