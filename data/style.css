@@ -429,3 +429,16 @@ window.main-window.translucent .path-strip scrolledwindow undershoot.right {
 window.main-window.translucent .preview .preview-text > text {
   background: none;
 }
+
+/* The text area of the error details and the error log: a framed view,
+ * like a card, so the selectable text stands apart from the dialog. */
+.report-text {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.report-text > textview,
+.report-text > textview > text {
+  background-color: var(--view-bg-color);
+  border-radius: 8px;
+}

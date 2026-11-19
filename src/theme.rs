@@ -363,7 +363,13 @@ impl Theme {
         let monitor = match folder.monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE) {
             Ok(monitor) => monitor,
             Err(error) => {
-                eprintln!("Cannot follow Omarchy theme changes: {error}");
+                use crate::dialogs::{self, label};
+                use crate::report::{self, Problem};
+                report::record(
+                    &Problem::new(dialogs::THEME_NOT_FOLLOWED, dialogs::attempt::FOLLOW_THEME)
+                        .file(label::FOLDER, &folder)
+                        .error(&error),
+                );
                 return;
             }
         };

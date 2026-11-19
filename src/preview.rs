@@ -26,6 +26,9 @@ use futures_util::StreamExt;
 use gtk::{cairo, gdk, gio, glib};
 use sourceview::prelude::*;
 
+use crate::dialogs::{self, label};
+use crate::report::{self, ErrorText, Problem};
+
 /// The cursor has to rest this long on a file before it is loaded, so that
 /// holding an arrow key down stays fast.
 const DELAY: std::time::Duration = std::time::Duration::from_millis(150);
@@ -106,7 +109,7 @@ enum Content {
     /// `shortened`: lines were cut at `LINE_LIMIT`.
     Text { text: String, cut: bool, shortened: bool },
     /// Nothing better than the facts; with the reason if something failed.
-    Other(Option<String>),
+    Other(Option<ErrorText>),
 }
 
 /// What the sound player reports; sent from its callbacks to the main loop.
@@ -117,7 +120,7 @@ enum SoundEvent {
     Position(f64),
     Playing(bool),
     Ended,
-    Error(String),
+    Error(ErrorText),
 }
 
 /// A sound that is loaded: the player and the hook-up of its signals.
@@ -446,7 +449,7 @@ impl Preview {
             Content::Video => {
                 self.video.set_file(Some(file));
                 if let Some(stream) = self.video.media_stream() {
-                    self.watch_playback(&stream, details, &status);
+                    self.watch_playback(&stream, file, details, &status);
                 }
                 "media"
             }
@@ -499,8 +502,13 @@ impl Preview {
                 "info"
             }
             Content::Other(problem) => {
-                let facts = match &problem {
-                    Some(problem) => format!("{status}\n{problem}"),
+                let facts = match problem {
+                    Some(problem) => {
+                        let facts = format!("{status}\n{}", problem.message);
+                        // Shown in the pane already; the details go to the log.
+                        record(file, &dialogs::preview_failed(&details.name), dialogs::attempt::PREVIEW, problem);
+                        facts
+                    }
                     None => status.clone(),
                 };
                 self.show_info(details, &facts);
@@ -519,7 +527,14 @@ impl Preview {
 
     /// If the video or sound cannot be played (usually a missing GStreamer
     /// plugin), shows the file's icon and says why instead of a black box.
-    fn watch_playback(self: &Rc<Self>, stream: &gtk::MediaStream, details: &Details, status: &str) {
+    fn watch_playback(
+        self: &Rc<Self>,
+        stream: &gtk::MediaStream,
+        file: &gio::File,
+        details: &Details,
+        status: &str,
+    ) {
+        let file = file.clone();
         let weak = Rc::downgrade(self);
         let generation = self.generation.get();
         let details = details.clone();
@@ -529,7 +544,9 @@ impl Preview {
                 && preview.generation.get() == generation
                 && let Some(error) = stream.error()
             {
-                let facts = format!("{status}\n{}", playback_problem(error.message()));
+                let problem = playback_problem(error.message());
+                record(&file, &problem, dialogs::attempt::PLAY, ErrorText::from_error(&error));
+                let facts = format!("{status}\n{problem}");
                 let details = details.clone();
                 // Not from inside the player's own notification.
                 glib::idle_add_local_once(move || {
@@ -552,7 +569,9 @@ impl Preview {
             return;
         }
         if let Err(error) = gst::init() {
-            self.info_facts.set_label(&format!("{status}\n{}", playback_problem(error.message())));
+            let problem = playback_problem(error.message());
+            record(file, &problem, dialogs::attempt::PLAY, ErrorText::from_error(&error));
+            self.info_facts.set_label(&format!("{status}\n{problem}"));
             return;
         }
         let play = gst_play::Play::new(None::<gst_play::PlayVideoRenderer>);
@@ -582,12 +601,13 @@ impl Preview {
             let _ = sender.unbounded_send(SoundEvent::Ended);
         });
         signals.connect_error(move |_, error, _| {
-            let _ = events.unbounded_send(SoundEvent::Error(error.message().to_owned()));
+            let _ = events.unbounded_send(SoundEvent::Error(ErrorText::from_error(error)));
         });
 
         let weak = Rc::downgrade(self);
         let generation = self.generation.get();
         let status = status.to_owned();
+        let played = file.clone();
         glib::spawn_future_local(async move {
             while let Some(event) = incoming.next().await {
                 let Some(preview) = weak.upgrade() else {
@@ -595,6 +615,10 @@ impl Preview {
                 };
                 if preview.generation.get() != generation {
                     break;
+                }
+                if let SoundEvent::Error(error) = &event {
+                    let problem = playback_problem(&error.message);
+                    record(&played, &problem, dialogs::attempt::PLAY, error.clone());
                 }
                 preview.sound_event(event, &status);
             }
@@ -623,13 +647,13 @@ impl Preview {
             }
             SoundEvent::Playing(playing) => self.set_sound_playing(playing),
             SoundEvent::Ended => self.set_sound_playing(false),
-            SoundEvent::Error(message) => {
+            SoundEvent::Error(error) => {
                 if let Some(sound) = self.sound.take() {
                     sound.play.stop();
                 }
                 self.set_sound_playing(false);
                 self.audio_box.set_visible(false);
-                self.info_facts.set_label(&format!("{status}\n{}", playback_problem(&message)));
+                self.info_facts.set_label(&format!("{status}\n{}", playback_problem(&error.message)));
             }
         }
     }
@@ -678,6 +702,12 @@ fn playback_problem(message: &str) -> String {
     }
 }
 
+/// Writes a problem of the preview to the log (the pane shows it already;
+/// a toast for every file the cursor passes would only be in the way).
+fn record(file: &gio::File, summary: &str, attempted: &str, error: ErrorText) {
+    report::record(&Problem::new(summary, attempted).file(label::FILE, file).error_text(error));
+}
+
 /// " · 3 pages", or " · first 10 of 240 pages" when not all are shown.
 fn pdf_pages_text(shown: i32, total: i32) -> String {
     match (shown, total) {
@@ -709,7 +739,7 @@ fn load(file: &gio::File, cancellable: &gio::Cancellable) -> Option<(Details, Co
         size: info.size().max(0) as u64,
         content_type,
     };
-    let problem = |error: glib::Error| Content::Other(Some(error.message().to_string()));
+    let problem = |error: glib::Error| Content::Other(Some(ErrorText::from_error(&error)));
     let content = match kind_of(&details.content_type, details.is_folder) {
         Kind::Folder => load_folder(file, cancellable).unwrap_or_else(problem),
         Kind::Image => {
@@ -920,8 +950,20 @@ fn watch_window() {
 }
 
 fn call_previewer(method: &str, parameters: Option<glib::Variant>) {
-    let Ok(connection) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
-        return;
+    let call = match &parameters {
+        Some(parameters) => format!("{PREVIEWER_INTERFACE}.{method} {parameters}"),
+        None => format!("{PREVIEWER_INTERFACE}.{method}"),
+    };
+    let connection = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(connection) => connection,
+        Err(error) => {
+            report::record(
+                &Problem::new(dialogs::PREVIEW_WINDOW_FAILED, dialogs::attempt::PREVIEW_WINDOW)
+                    .fact(label::DBUS_CALL, &call)
+                    .error(&error),
+            );
+            return;
+        }
     };
     connection.call(
         Some(PREVIEWER),
@@ -933,7 +975,15 @@ fn call_previewer(method: &str, parameters: Option<glib::Variant>) {
         gio::DBusCallFlags::NONE,
         5000,
         gio::Cancellable::NONE,
-        |_| {},
+        move |result| {
+            if let Err(error) = result {
+                report::record(
+                    &Problem::new(dialogs::PREVIEW_WINDOW_FAILED, dialogs::attempt::PREVIEW_WINDOW)
+                        .fact(label::DBUS_CALL, &call)
+                        .error(&error),
+                );
+            }
+        },
     );
 }
 

@@ -360,6 +360,27 @@ pub fn favourites_not_saved(reason: &str) -> String {
 pub const FAVOURITES_UNREADABLE: &str =
     "Favourites can’t be changed, because the bookmarks file could not be read";
 
+/// In the log, when the bookmarks file can't be watched for changes.
+pub const FAVOURITES_NOT_WATCHED: &str =
+    "Changes to the favourites by other apps won’t show until Kommander restarts";
+
+/// The reason when a file that should be text is not (UTF-8).
+pub const NOT_TEXT: &str = "The file is not readable text (UTF-8)";
+
+/// In the log, when the preview could not show a file (the pane says why).
+pub fn preview_failed(name: &str) -> String {
+    format!("Could not preview “{name}”")
+}
+
+/// In the log, when GNOME's previewer window (Sushi) did not answer.
+pub const PREVIEW_WINDOW_FAILED: &str = "The preview window (Sushi) could not be reached";
+
+/// In the log, when the settings could not be saved.
+pub const SETTINGS_NOT_SAVED: &str = "Could not save the settings";
+
+/// In the log, when Omarchy's theme folder can't be watched.
+pub const THEME_NOT_FOLLOWED: &str = "Omarchy theme changes won’t be followed until Kommander restarts";
+
 /// The status line while a folder takes a moment to be read.
 pub const LOADING: &str = "Loading…";
 
@@ -390,9 +411,147 @@ pub fn open_with_intro(name: &str) -> String {
     format!("Choose an app to open “{name}”.")
 }
 
+/// The reason when no app is set up for a kind of file.
+pub const NO_APP_FOR_KIND: &str = "No application for this kind of file";
+/// In the log, when GIO started the default app and we could not tell which.
+pub const DEFAULT_APP: &str = "the default app";
+/// The toast when F4 finds no app for text files.
+pub const NO_TEXT_EDITOR: &str = "No text editor is set up";
+/// The toast when Shift+F4 could not start the terminal.
+pub const NO_TERMINAL: &str = "Could not open a terminal";
+
 /// The toast when the app chosen in Open With could not be started.
 pub fn could_not_open_with(name: &str, app: &str) -> String {
     format!("Could not open “{name}” with {app}")
+}
+
+// --- Error details and the error log (see report.rs) ---
+
+/// The button on an error toast, and the title of what it opens.
+pub const DETAILS: &str = "_Details";
+pub const DETAILS_COPY: &str = "_Copy";
+pub const DETAILS_COPY_ALL: &str = "Copy _All";
+pub const DETAILS_COPIED: &str = "Copied";
+pub const DETAILS_CLOSE: &str = "_Close";
+pub const DETAILS_SUBTITLE: &str = "Copy this and paste it into a message to get help";
+
+pub const ERROR_LOG_TITLE: &str = "Error Log";
+pub const ERROR_LOG_EMPTY: &str = "The error log is empty: nothing has gone wrong so far.";
+pub const ERROR_LOG_SHOW_IN_PANEL: &str = "_Show in Panel";
+
+/// The line under the error log's title: where the file is.
+pub fn error_log_subtitle(path: &str) -> String {
+    format!("Newest first · {path}")
+}
+
+/// The labels of the lines in the details of an error. Plain words, so the
+/// text can be pasted into a chat as it is.
+pub mod label {
+    pub const ATTEMPTED: &str = "What was attempted";
+    pub const ERROR: &str = "Error";
+    pub const ERROR_CODE: &str = "Error domain and code";
+    pub const PROGRAM: &str = "Program";
+    pub const COMMAND: &str = "Command line";
+    pub const ADDRESS: &str = "Address handed to it";
+    pub const FAILED: &str = "Failed files";
+    pub const VERSION: &str = "Kommander version";
+    pub const TIME: &str = "Time";
+    pub const FILE: &str = "File";
+    pub const FOLDER: &str = "Folder";
+    pub const DESTINATION: &str = "Destination folder";
+    pub const SOURCES: &str = "Asked for";
+    pub const RESULT: &str = "Result";
+    pub const CONTENT_TYPE: &str = "Kind of file";
+    pub const LOCAL_PATH: &str = "local path";
+    pub const LOCATION: &str = "Location";
+    pub const DBUS_CALL: &str = "D-Bus call";
+}
+
+/// "Program" line of the details: "mpv (desktop file mpv.desktop)".
+pub fn program_line(name: &str, id: Option<&str>) -> String {
+    match id {
+        Some(id) => format!("{name} (desktop file {id})"),
+        None => name.to_string(),
+    }
+}
+
+/// Heading of the list of failed files: "Failed files (3)".
+pub fn failed_heading(count: usize) -> String {
+    format!("{} ({count})", label::FAILED)
+}
+
+/// How a copy or move ended, counted: "2 arrived, 0 skipped, 1 incomplete".
+pub fn transfer_result(arrived: usize, skipped: u32, incomplete: u32) -> String {
+    format!("{arrived} arrived, {skipped} skipped, {incomplete} incomplete")
+}
+
+/// The log line for a program started from Kommander: failures inside it
+/// never come back, so at least the log says what was handed over.
+pub fn launched(program: &str, command: &str, address: &str) -> String {
+    format!("Started {program}\n{}: {command}\n{}: {address}", label::COMMAND, label::ADDRESS)
+}
+
+/// What was being done when something failed, for the details.
+pub mod attempt {
+    use super::{name_or_count, transfer_words};
+    use crate::ops::transfer::Kind;
+
+    pub const OPEN_FOLDER: &str = "Open a folder in a panel";
+    pub const OPEN_ARGUMENT: &str = "Open a folder or file given to Kommander on start";
+    pub const OPEN_DEFAULT: &str = "Open a file with the default app for its kind";
+    pub const EDIT: &str = "Open a file in the text editor (F4)";
+    pub const TERMINAL: &str = "Open a terminal in a folder (Shift+F4)";
+    pub const SAVE_FAVOURITES: &str = "Save the favourites to the bookmarks file";
+    pub const READ_FAVOURITES: &str = "Read the favourites from the bookmarks file";
+    pub const WATCH_FAVOURITES: &str = "Watch the bookmarks file for changes";
+    pub const LOOK_INTO_TRASH: &str = "Look into the trash to bring files back (Undo)";
+    pub const PREVIEW: &str = "Show a file in the preview (F3)";
+    pub const PLAY: &str = "Play a video or sound in the preview (F3)";
+    pub const PREVIEW_WINDOW: &str = "Show a file in the separate preview window (Sushi)";
+    pub const SAVE_SETTINGS: &str = "Save the settings";
+    pub const FOLLOW_THEME: &str = "Follow Omarchy theme changes";
+
+    pub fn new_folder(name: &str) -> String {
+        format!("Create the folder “{name}”")
+    }
+
+    pub fn rename(old: &str, new: &str) -> String {
+        format!("Rename “{old}” to “{new}”")
+    }
+
+    pub fn rename_back(new: &str, old: &str) -> String {
+        format!("Rename “{new}” back to “{old}” (Undo)")
+    }
+
+    pub fn trash(names: &[String]) -> String {
+        format!("Move {} to the trash", name_or_count(names))
+    }
+
+    pub fn restore(names: &[String]) -> String {
+        format!("Bring {} back from the trash (Undo)", name_or_count(names))
+    }
+
+    pub fn delete(names: &[String]) -> String {
+        format!("Delete {} permanently", name_or_count(names))
+    }
+
+    pub fn transfer(kind: Kind, names: &[String], dest: &str) -> String {
+        let (verb, _, _) = transfer_words(kind);
+        format!("{verb} {} to “{dest}”", name_or_count(names))
+    }
+
+    pub fn open_with(app: &str) -> String {
+        format!("Open a file with {app} (Open With)")
+    }
+
+    /// From the favourites sidebar: "Unmount “USB stick”".
+    pub fn sidebar(verb: &str, name: &str) -> String {
+        let mut verb = verb.to_string();
+        if let Some(first) = verb.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        format!("{verb} “{name}” from the favourites sidebar")
+    }
 }
 
 // --- Dialogs ---
@@ -755,6 +914,22 @@ mod tests {
     fn check(name: &str, is_folder: bool, current: Option<&str>) -> NameCheck {
         let taken = ["Music", "notes.txt", "Photos"];
         check_name(name, is_folder, current, |n| taken.contains(&n))
+    }
+
+    #[test]
+    fn error_detail_wording() {
+        let one = ["a.txt".to_string()];
+        let three: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(attempt::rename("a", "b"), "Rename “a” to “b”");
+        assert_eq!(attempt::trash(&three), "Move 3 files to the trash");
+        assert_eq!(attempt::delete(&one), "Delete “a.txt” permanently");
+        assert_eq!(attempt::transfer(Kind::Copy, &three, "dst"), "Copy 3 files to “dst”");
+        assert_eq!(attempt::transfer(Kind::Move, &one, "dst"), "Move “a.txt” to “dst”");
+        assert_eq!(attempt::sidebar("unmount", "USB"), "Unmount “USB” from the favourites sidebar");
+        assert_eq!(program_line("mpv", Some("mpv.desktop")), "mpv (desktop file mpv.desktop)");
+        assert_eq!(program_line("xdg-terminal-exec", None), "xdg-terminal-exec");
+        assert_eq!(failed_heading(2), "Failed files (2)");
+        assert_eq!(error_log_subtitle("/s/k.log"), "Newest first · /s/k.log");
     }
 
     #[test]

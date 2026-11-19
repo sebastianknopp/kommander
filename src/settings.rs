@@ -130,7 +130,7 @@ impl Settings {
         Settings::from_key_file(&file)
     }
 
-    /// Writes the settings; failures are only reported on stderr.
+    /// Writes the settings; failures only go to the error log (and stderr).
     pub fn save(&self) {
         let file = self.to_key_file();
         let path = path();
@@ -140,7 +140,13 @@ impl Settings {
             .map_err(|e| e.to_string())
             .and_then(|_| file.save_to_file(&path).map_err(|e| e.to_string()));
         if let Err(error) = result {
-            eprintln!("Could not save settings to {}: {error}", path.display());
+            use crate::dialogs::{self, label};
+            use crate::report::{self, ErrorText, Problem};
+            report::record(
+                &Problem::new(dialogs::SETTINGS_NOT_SAVED, dialogs::attempt::SAVE_SETTINGS)
+                    .fact(label::FILE, &path.display().to_string())
+                    .error_text(ErrorText::plain(&error)),
+            );
         }
     }
 

@@ -87,6 +87,12 @@ Module map (`src/`):
 - `fkeybar.rs` — the function-key bar at the bottom.
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
   messages (with tests).
+- `report.rs` — reporting errors: the toast with a Details button, the
+  details text (pure function `details`, tested), the details and Error Log
+  dialogs (Copy, Copy All), and the error log
+  `<state dir>/kommander/kommander.log` (`glib::user_state_dir()`), written
+  by a thread of its own, cut back to its newest half past 256 KB; also
+  logs which app each file was handed to. Tests never write the log.
 - `menu.rs` — the panels' right-click menu (Menu key, Shift+F10): which
   items appear where (tested) and showing it; `window.rs` runs the items
   (`run_command`) through the same code as their keys.
@@ -146,6 +152,17 @@ Module map (`src/`):
   `data/style.css` via CSS classes.
 - **User-facing wording** lives in functions in `dialogs.rs` with unit tests;
   plain, friendly sentences in the GNOME style (curly quotes, "…").
+- **Errors go through `report.rs`**, never a bare toast or `eprintln!`:
+  build a `report::Problem` (the toast's short sentence, what was
+  attempted, the files as full addresses with `.file()`, the GIO error with
+  `.error()`, every failed file with `.failure()`, for launches `.program()`
+  and the address handed over) and pass it to `report::show` (toast with
+  Details, log, stderr). Problems already shown another way (a toast with
+  Undo, the preview pane) or with nothing to show go to `report::record`
+  (log and stderr only). Starting another program is logged with
+  `report::launched`. Plain toasts are for successes and refusals
+  ("A folder can’t be put inside itself"). The owner reports problems by
+  pasting the details, so keep them complete.
 - Comments explain why, in plain English; each file starts with a header
   comment saying what it is for and an SPDX line. Follow Nautilus behaviour
   where it applies and say so in a comment.

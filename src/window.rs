@@ -22,6 +22,8 @@ use crate::settings::{IconSize, Settings};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
 use crate::start::{self, Target};
+use crate::dialogs::label;
+use crate::report::{self, Problem};
 use crate::{dialogs, fkeybar, openwith, ops, preferences, theme};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
@@ -197,7 +199,7 @@ fn add_open_action(window: &adw::ApplicationWindow, state: &Rc<State>) {
                             state.go_to_target(index, &target);
                         }
                     }
-                    Err(error) => state.toast(&not_opened(&file, &error)),
+                    Err(error) => state.report(not_opened(&file, &error)),
                 }
             });
         })
@@ -205,9 +207,13 @@ fn add_open_action(window: &adw::ApplicationWindow, state: &Rc<State>) {
     window.add_action_entries([open_argument]);
 }
 
-/// The toast for an argument that cannot be opened.
-fn not_opened(file: &gio::File, error: &glib::Error) -> String {
-    dialogs::failed(&[start::display_name(file)], "open", "opened", &dialogs::reason(error))
+/// The problem report for an argument that cannot be opened.
+fn not_opened(file: &gio::File, error: &glib::Error) -> Problem {
+    let summary =
+        dialogs::failed(&[start::display_name(file)], "open", "opened", &dialogs::reason(error));
+    Problem::new(&summary, dialogs::attempt::OPEN_ARGUMENT)
+        .file(label::FILE, file)
+        .error(error)
 }
 
 impl State {
@@ -344,6 +350,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     let app_section = gio::Menu::new();
     app_section.append(Some("_Preferences"), Some("app.preferences"));
     app_section.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
+    app_section.append(Some("Show _Error Log"), Some("app.error-log"));
     app_section.append(Some("_About Kommander"), Some("app.about"));
     menu.append_section(None, &app_section);
     let menu_button = gtk::MenuButton::builder()
@@ -698,8 +705,8 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             state.go_to_target(i, target);
         }
     }
-    for text in not_found {
-        state.toast(&text);
+    for problem in not_found {
+        state.report(problem);
     }
 }
 
@@ -864,7 +871,28 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
         })
         .build();
 
-    app.add_action_entries([preferences, shortcuts, about]);
+    // The error log; its "Show in Panel" takes the active panel to the
+    // log's folder, cursor on the log.
+    let window_weak = window.downgrade();
+    let state_weak = Rc::downgrade(state);
+    let error_log = gio::ActionEntry::builder("error-log")
+        .activate(move |_, _, _| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let state_weak = state_weak.clone();
+            report::present_log(&window, move |log| {
+                if let (Some(state), Some(folder), Some(name)) =
+                    (state_weak.upgrade(), log.parent(), log.basename())
+                {
+                    state.panels[state.active.get()].go_to_file(&folder, name);
+                    state.focus_panel();
+                }
+            });
+        })
+        .build();
+
+    app.add_action_entries([preferences, shortcuts, error_log, about]);
     app.set_accels_for_action("app.preferences", &["<Control>comma"]);
     app.set_accels_for_action("app.shortcuts", &["<Control>question"]);
 }
@@ -1011,6 +1039,11 @@ impl State {
         self.toasts.add_toast(toast);
     }
 
+    /// Shows `problem` as an error toast with Details, and logs it.
+    fn report(&self, problem: Problem) {
+        report::show(&self.toasts, problem);
+    }
+
     /// Shows `text` with an Undo button that runs `undo`.
     fn toast_with_undo(&self, text: &str, undo: impl Fn() + 'static) {
         let toast = adw::Toast::builder().title(text).button_label("_Undo").build();
@@ -1018,6 +1051,11 @@ impl State {
         toast.connect_button_clicked(move |_| undo());
         self.toasts.add_toast(toast);
     }
+}
+
+/// The names to show for `files`.
+fn names_of(files: &[gio::File]) -> Vec<String> {
+    files.iter().map(file_name).collect()
 }
 
 /// The name to show for `file`.
@@ -1052,7 +1090,12 @@ fn new_folder(state: &Rc<State>, panel: &Rc<Panel>) {
                     panel.put_cursor_on(created.basename().unwrap_or_default())
                 }),
                 Err(error) => {
-                    state.toast(&format!("Could not create “{name}”: {}", dialogs::reason(&error)))
+                    let summary = format!("Could not create “{name}”: {}", dialogs::reason(&error));
+                    state.report(
+                        Problem::new(&summary, &dialogs::attempt::new_folder(&name))
+                            .file(label::FOLDER, &folder)
+                            .error(&error),
+                    )
                 }
             }
         });
@@ -1082,7 +1125,12 @@ fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
                 Ok(renamed) => renamed,
                 Err(error) => {
                     let reason = dialogs::reason(&error);
-                    return state.toast(&format!("Could not rename “{old}”: {reason}"));
+                    let summary = format!("Could not rename “{old}”: {reason}");
+                    return state.report(
+                        Problem::new(&summary, &dialogs::attempt::rename(&old, &new))
+                            .file(label::FILE, &file)
+                            .error(&error),
+                    );
                 }
             };
             let folder = renamed.parent();
@@ -1103,10 +1151,15 @@ fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
                         Ok(back) => if_showing(&panel, &folder, |panel| {
                             panel.put_cursor_on(back.basename().unwrap_or_default())
                         }),
-                        Err(error) => state.toast(&format!(
-                            "Could not rename “{new}” back: {}",
-                            dialogs::reason(&error)
-                        )),
+                        Err(error) => {
+                            let summary =
+                                format!("Could not rename “{new}” back: {}", dialogs::reason(&error));
+                            state.report(
+                                Problem::new(&summary, &dialogs::attempt::rename_back(&new, &old))
+                                    .file(label::FILE, &renamed)
+                                    .error(&error),
+                            )
+                        }
                     }
                 });
             });
@@ -1168,7 +1221,15 @@ fn trash_files(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
         let reason =
             outcome.failed.first().map(|(_, error)| dialogs::reason(error)).unwrap_or_default();
         let text = dialogs::trashed(&trashed_names, &failed_names, &reason);
+        let mut problem = Problem::new(&text, &dialogs::attempt::trash(&names_of(&files)));
+        for (file, error) in &outcome.failed {
+            problem = problem.failure(file, error);
+        }
         if !outcome.trashed.is_empty() {
+            // The toast has Undo; the details of what failed go to the log.
+            if !outcome.failed.is_empty() {
+                report::record(&problem);
+            }
             let state_weak = Rc::downgrade(&state);
             let panel_weak = Rc::downgrade(&panel);
             let trashed = outcome.trashed;
@@ -1178,7 +1239,7 @@ fn trash_files(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
                 }
             });
         } else if !outcome.failed.is_empty() {
-            state.toast(&text);
+            state.report(problem);
         }
 
         if !outcome.unsupported.is_empty() {
@@ -1194,7 +1255,10 @@ fn restore(state: Rc<State>, panel: Rc<Panel>, trashed: Vec<ops::Trashed>) {
             Ok(result) => result,
             Err(error) => {
                 let reason = dialogs::reason(&error);
-                return state.toast(&format!("Could not look into the trash: {reason}"));
+                let summary = format!("Could not look into the trash: {reason}");
+                return state.report(
+                    Problem::new(&summary, dialogs::attempt::LOOK_INTO_TRASH).error(&error),
+                );
             }
         };
         if let Some(first) = restored.first() {
@@ -1205,7 +1269,14 @@ fn restore(state: Rc<State>, panel: Rc<Panel>, trashed: Vec<ops::Trashed>) {
         if let Some((_, error)) = failed.first() {
             let names: Vec<String> = failed.iter().map(|(file, _)| file_name(file)).collect();
             let reason = dialogs::reason(error);
-            state.toast(&dialogs::failed(&names, "restore", "restored", &reason));
+            let summary = dialogs::failed(&names, "restore", "restored", &reason);
+            let originals: Vec<String> =
+                trashed.iter().map(|item| file_name(&item.original)).collect();
+            let mut problem = Problem::new(&summary, &dialogs::attempt::restore(&originals));
+            for (file, error) in &failed {
+                problem = problem.failure(file, error);
+            }
+            state.report(problem);
         }
     });
 }
@@ -1228,7 +1299,7 @@ fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File
             let mut failed = Vec::new();
             for file in &files {
                 if let Err(error) = ops::delete_recursively(file).await {
-                    failed.push((file_name(file), error));
+                    failed.push((file.clone(), error));
                 }
             }
             if_showing(&panel, &folder, |panel| {
@@ -1239,8 +1310,13 @@ fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File
             });
             if let Some((_, error)) = failed.first() {
                 let reason = dialogs::reason(error);
-                let names: Vec<String> = failed.iter().map(|(name, _)| name.clone()).collect();
-                state.toast(&dialogs::failed(&names, "delete", "deleted", &reason));
+                let names: Vec<String> = failed.iter().map(|(file, _)| file_name(file)).collect();
+                let summary = dialogs::failed(&names, "delete", "deleted", &reason);
+                let mut problem = Problem::new(&summary, &dialogs::attempt::delete(&names_of(&files)));
+                for (file, error) in &failed {
+                    problem = problem.failure(file, error);
+                }
+                state.report(problem);
             }
         });
     });
@@ -1254,6 +1330,7 @@ struct Transfer {
     /// The names of the files asked for, and of the destination folder.
     names: Vec<String>,
     dest_name: String,
+    dest_dir: gio::File,
     /// The panel the files came from, and the folder it showed then (none
     /// for files dropped from another app).
     panel: Option<Rc<Panel>>,
@@ -1262,6 +1339,25 @@ struct Transfer {
     /// The file the cursor was on, and where it goes if that one moves away.
     cursor: Option<gio::File>,
     neighbour: Option<PathBuf>,
+}
+
+/// The details of a copy or move that did not go through completely: the
+/// files asked for, where to, and every file that failed with its reason.
+fn transfer_problem(text: &str, transfer: &Transfer, summary: &Summary) -> Problem {
+    let attempted = dialogs::attempt::transfer(transfer.kind, &transfer.names, &transfer.dest_name);
+    let sources: Vec<String> = transfer.sources.iter().map(report::location).collect();
+    let result = dialogs::transfer_result(summary.done.len(), summary.skipped, summary.incomplete);
+    let mut problem = Problem::new(text, &attempted)
+        .file(label::DESTINATION, &transfer.dest_dir)
+        .fact(label::SOURCES, &sources.join("\n"))
+        .fact(label::RESULT, &result);
+    if let Some(error) = &summary.stopped {
+        problem = problem.error(error);
+    }
+    for (file, error) in &summary.failed {
+        problem = problem.failure(file, error);
+    }
+    problem
 }
 
 /// The name clash question on screen: whose it is, and the line back to the
@@ -1364,6 +1460,7 @@ fn confirm_transfer_then(
             kind,
             names: names.clone(),
             dest_name: dest_name.clone(),
+            dest_dir: dest_dir.clone(),
             panel: origin.clone(),
             folder: origin.as_ref().and_then(|panel| panel.folder()),
             sources: sources.clone(),
@@ -1502,9 +1599,9 @@ fn open_with(state: &Rc<State>, info: &gio::FileInfo, file: &gio::File) {
         .map(|kind| kind.to_string())
         .unwrap_or_else(|| gio::content_type_guess(Some(info.name()), None::<&[u8]>).0.to_string());
     let state_weak = Rc::downgrade(state);
-    openwith::present(&state.panels_box, file, &info.display_name(), &content_type, move |message| {
+    openwith::present(&state.panels_box, file, &info.display_name(), &content_type, move |problem| {
         if let Some(state) = state_weak.upgrade() {
-            state.toast(&message);
+            state.report(problem);
         }
     });
 }
@@ -1601,7 +1698,12 @@ impl State {
         let Some(transfer) = self.transfers.borrow_mut().remove(&id) else {
             return;
         };
-        self.toast(&dialogs::transferred(summary, &transfer.names, &transfer.dest_name));
+        let text = dialogs::transferred(summary, &transfer.names, &transfer.dest_name);
+        if summary.failed.is_empty() && summary.stopped.is_none() && summary.incomplete == 0 {
+            self.toast(&text);
+        } else {
+            self.report(transfer_problem(&text, &transfer, summary));
+        }
 
         // In the panel the files came from, the marks of the files that were
         // acted on go (others marked meanwhile stay), and if the file under

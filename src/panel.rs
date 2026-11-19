@@ -23,7 +23,9 @@ use crate::dnd::{self, DropCheck, Hover};
 use crate::listings::{self, Listing, Listings, TypeLookup};
 use crate::marks::Marks;
 use crate::ops::transfer::Kind;
+use crate::dialogs::{self, label};
 use crate::pathbar::PathBar;
+use crate::report::{self, ErrorText, Problem};
 use crate::settings::{Sort, SortColumn};
 
 /// After this long without the new folder ready, the status line says so.
@@ -803,8 +805,14 @@ impl Panel {
                     || folder.parse_name().to_string(),
                     |name| name.to_string_lossy().into_owned(),
                 );
-                let reason = crate::dialogs::reason(&error);
-                toast(&self.root, &crate::dialogs::failed(&[name], "open", "opened", &reason));
+                let reason = dialogs::reason(&error);
+                let summary = dialogs::failed(&[name], "open", "opened", &reason);
+                report::show(
+                    &self.root,
+                    Problem::new(&summary, dialogs::attempt::OPEN_FOLDER)
+                        .file(label::FOLDER, &folder)
+                        .error(&error),
+                );
                 self.listings.forget(&folder);
             }
             None => self.listings.keep(listing),
@@ -979,18 +987,39 @@ impl Panel {
         // (gtk::FileLauncher goes through the desktop portal, which asks
         // "Open With…" instead of using the default app.)
         let root = self.root.clone();
-        let name = info.display_name();
+        let name = info.display_name().to_string();
         let context = self.root.display().app_launch_context();
+        let problem = Problem::new("", dialogs::attempt::OPEN_DEFAULT).file(label::FILE, &file);
+        let failed = move |problem: Problem, error: &glib::Error| {
+            let reason = dialogs::reason(error);
+            let summary = dialogs::failed(std::slice::from_ref(&name), "open", "opened", &reason);
+            report::show(&root, Problem { summary, ..problem }.error(error));
+        };
         if file.is_native() {
+            // GIO picks the app itself; the one it will most likely pick
+            // (the default for the kind of file the name says) goes into
+            // the log and the details.
+            let content_type = info
+                .attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE)
+                .or_else(|| info.content_type())
+                .map(|kind| kind.to_string())
+                .unwrap_or_default();
+            let app = gio::AppInfo::default_for_type(&content_type, false);
+            let address = file.uri().to_string();
+            let mut problem = problem.fact(label::CONTENT_TYPE, &content_type);
+            if let Some(app) = &app {
+                problem = problem.program(app).fact(label::ADDRESS, &address);
+            }
             gio::AppInfo::launch_default_for_uri_async(
-                &file.uri(),
+                &address.clone(),
                 Some(&context),
                 gio::Cancellable::NONE,
-                move |result| {
-                    if let Err(error) = result {
-                        eprintln!("Could not open {name}: {error}");
-                        toast(&root, &format!("Could not open “{name}”"));
-                    }
+                move |result| match result {
+                    Ok(()) => match &app {
+                        Some(app) => report::launched(app, &address),
+                        None => report::launched_program(dialogs::DEFAULT_APP, "", &address),
+                    },
+                    Err(error) => failed(problem, &error),
                 },
             );
             return;
@@ -1000,25 +1029,28 @@ impl Panel {
         // player. So the app is chosen by the kind of file, as for local
         // files, and gets the address from `uri_for_other_apps`.
         glib::spawn_future_local(async move {
-            let opened = async {
-                let info = file
-                    .query_info_future(
-                        "standard::content-type",
-                        gio::FileQueryInfoFlags::NONE,
-                        glib::Priority::DEFAULT,
-                    )
-                    .await?;
-                let app = info
-                    .content_type()
-                    .and_then(|content_type| gio::AppInfo::default_for_type(&content_type, false))
-                    .ok_or_else(|| {
-                        glib::Error::new(gio::IOErrorEnum::NotFound, "No application for this kind of file")
-                    })?;
-                app.launch_uris(&[uri_for_other_apps(&file).as_str()], Some(&context))
+            let info = file
+                .query_info_future(
+                    "standard::content-type",
+                    gio::FileQueryInfoFlags::NONE,
+                    glib::Priority::DEFAULT,
+                )
+                .await;
+            let info = match info {
+                Ok(info) => info,
+                Err(error) => return failed(problem, &error),
             };
-            if let Err(error) = opened.await {
-                eprintln!("Could not open {name}: {error}");
-                toast(&root, &format!("Could not open “{name}”: {}", error.message()));
+            let content_type = info.content_type().map(|kind| kind.to_string()).unwrap_or_default();
+            let problem = problem.fact(label::CONTENT_TYPE, &content_type);
+            let Some(app) = gio::AppInfo::default_for_type(&content_type, false) else {
+                let error = glib::Error::new(gio::IOErrorEnum::NotFound, dialogs::NO_APP_FOR_KIND);
+                return failed(problem, &error);
+            };
+            let address = uri_for_other_apps(&file).to_string();
+            let problem = problem.program(&app).fact(label::ADDRESS, &address);
+            match app.launch_uris(&[address.as_str()], Some(&context)) {
+                Ok(()) => report::launched(&app, &address),
+                Err(error) => failed(problem, &error),
             }
         });
     }
@@ -1035,17 +1067,25 @@ impl Panel {
         let Some(file) = entry_file(&info) else {
             return;
         };
+        let problem = Problem::new("", dialogs::attempt::EDIT).file(label::FILE, &file);
         let Some(editor) = gio::AppInfo::default_for_type("text/plain", false) else {
-            toast(&self.root, "No text editor is set up");
-            return;
+            let problem = Problem { summary: dialogs::NO_TEXT_EDITOR.into(), ..problem }
+                .fact(label::CONTENT_TYPE, "text/plain")
+                .error_text(ErrorText::plain(dialogs::NO_APP_FOR_KIND));
+            return report::show(&self.root, problem);
         };
         let context = self.root.display().app_launch_context();
-        if let Err(error) = editor.launch_uris(&[uri_for_other_apps(&file).as_str()], Some(&context)) {
-            eprintln!("Could not edit {}: {error}", info.display_name());
-            toast(
-                &self.root,
-                &format!("Could not open “{}” in {}", info.display_name(), editor.display_name()),
-            );
+        let address = uri_for_other_apps(&file).to_string();
+        match editor.launch_uris(&[address.as_str()], Some(&context)) {
+            Ok(()) => report::launched(&editor, &address),
+            Err(error) => {
+                let summary = dialogs::could_not_open_with(&info.display_name(), &editor.display_name());
+                let problem = Problem { summary, ..problem }
+                    .program(&editor)
+                    .fact(label::ADDRESS, &address)
+                    .error(&error);
+                report::show(&self.root, problem);
+            }
         }
     }
 
@@ -1077,7 +1117,7 @@ impl Panel {
         dir.push(&path);
         let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
         let command = [
-            OsStr::new("xdg-terminal-exec"),
+            OsStr::new(TERMINAL),
             dir.as_os_str(),
             OsStr::new("--"),
             OsStr::new("env"),
@@ -1085,9 +1125,18 @@ impl Panel {
             path.as_os_str(),
             shell.as_os_str(),
         ];
-        if let Err(error) = launcher.spawn(&command) {
-            eprintln!("Could not start xdg-terminal-exec: {error}");
-            toast(&self.root, "Could not open a terminal");
+        let place = path.display().to_string();
+        let command_line = command.map(|part| part.to_string_lossy().into_owned()).join(" ");
+        match launcher.spawn(&command) {
+            Ok(_) => report::launched_program(TERMINAL, &command_line, &place),
+            Err(error) => report::show(
+                &self.root,
+                Problem::new(dialogs::NO_TERMINAL, dialogs::attempt::TERMINAL)
+                    .file(label::FOLDER, folder)
+                    .fact(label::PROGRAM, TERMINAL)
+                    .fact(label::COMMAND, &command_line)
+                    .error(&error),
+            ),
         }
     }
 
@@ -1635,15 +1684,22 @@ fn timing() -> bool {
     *TIMING.get_or_init(|| std::env::var_os("KOMMANDER_TIMING").is_some())
 }
 
-/// Shows a short message on the window's toast overlay.
+/// Shows a short message on the window's toast overlay. (Errors go
+/// through `report::show` instead.)
 fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Some(overlay) = widget
         .ancestor(adw::ToastOverlay::static_type())
         .and_downcast::<adw::ToastOverlay>()
     {
-        overlay.add_toast(adw::Toast::new(text));
+        // As it is: file names may contain "&" or "<".
+        let toast = adw::Toast::new(text);
+        toast.set_use_markup(false);
+        overlay.add_toast(toast);
     }
 }
+
+/// The program that opens a terminal in a folder (Omarchy's default).
+const TERMINAL: &str = "xdg-terminal-exec";
 
 /// The ".." row's entry: shown like a folder, but it has no
 /// "standard::file", so nothing that acts on files can pick it up.
