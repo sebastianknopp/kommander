@@ -155,7 +155,7 @@ pub fn present(
             };
             let context = dialog.display().app_launch_context();
             dialog.close();
-            if let Err(error) = app.launch(std::slice::from_ref(&file), Some(&context)) {
+            if let Err(error) = app.launch(&[crate::panel::for_other_apps(&file)], Some(&context)) {
                 eprintln!("Could not open {name} with {}: {error}", app.display_name());
                 on_error(dialogs::could_not_open_with(&name, &app.display_name()));
             }
