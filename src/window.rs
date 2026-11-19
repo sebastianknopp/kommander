@@ -11,15 +11,17 @@ use std::sync::mpsc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::clipboard::{self, Clipboard, PastePlan};
 use crate::jobs::{self, JobId, Jobs};
 use crate::listings::Listings;
 use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary};
-use crate::panel::{Panel, entry_file};
+use crate::menu::{self, Command};
+use crate::panel::{MenuTarget, Panel, entry_file};
 use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
-use crate::{dialogs, fkeybar, ops, preferences, theme};
+use crate::{dialogs, fkeybar, openwith, ops, preferences, theme};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
 struct State {
@@ -50,6 +52,8 @@ struct State {
     quitting: Cell<bool>,
     /// The question whether to stop and quit is on screen.
     asking_quit: Cell<bool>,
+    /// Cut, copy and paste of files (Ctrl+X, Ctrl+C, Ctrl+V).
+    clipboard: Rc<Clipboard>,
 }
 
 impl State {
@@ -197,6 +201,7 @@ pub fn build(app: &adw::Application) {
     let state = Rc::new_cyclic(|state_weak: &std::rc::Weak<State>| {
         let on_event = state_weak.clone();
         let on_cancel = state_weak.clone();
+        let on_cut = state_weak.clone();
         State {
             panels,
             listings: listings.clone(),
@@ -222,6 +227,14 @@ pub fn build(app: &adw::Application) {
             conflict: RefCell::default(),
             quitting: Cell::new(false),
             asking_quit: Cell::new(false),
+            // Files cut here or in GNOME Files look cut in both panels.
+            clipboard: Clipboard::new(move |cut| {
+                if let Some(state) = on_cut.upgrade() {
+                    for panel in &state.panels {
+                        panel.set_cut(cut);
+                    }
+                }
+            }),
         }
     });
     state.apply_icon_size(state.settings.borrow().icon_size);
@@ -354,6 +367,16 @@ pub fn build(app: &adw::Application) {
         });
     }
 
+    // Right-clicking a panel opens its menu (and makes it the active one).
+    for (index, panel) in state.panels.iter().enumerate() {
+        let state_weak = Rc::downgrade(&state);
+        panel.connect_context_menu(move |target| {
+            if let Some(state) = state_weak.upgrade() {
+                show_menu(&state, index, target);
+            }
+        });
+    }
+
     // Global keys, caught before any widget sees them: Tab switches panels
     // (so GTK never walks the focus through the widgets), Backspace goes up
     // in the active panel, and typing a character starts type-to-search.
@@ -426,6 +449,25 @@ pub fn build(app: &adw::Application) {
             return glib::Propagation::Stop;
         }
 
+        // Ctrl+X, Ctrl+C, Ctrl+V: cut, copy and paste files. (While
+        // searching, the search field keeps them for its text; dialogs and
+        // menus never get here.)
+        if !panel.is_searching()
+            && modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+        {
+            match key.to_lower() {
+                gdk::Key::x => window_state.clipboard.put(&panel.files_to_act_on(), true),
+                gdk::Key::c => window_state.clipboard.put(&panel.files_to_act_on(), false),
+                gdk::Key::v => {
+                    if let Some(folder) = panel.folder() {
+                        paste(&window_state, folder);
+                    }
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
@@ -477,6 +519,13 @@ pub fn build(app: &adw::Application) {
         }
         if key == gdk::Key::BackSpace && !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
             panel.open_parent();
+            return glib::Propagation::Stop;
+        }
+        // The Menu key and Shift+F10 open the right-click menu for the
+        // row under the cursor, as everywhere in GTK.
+        let shift_only = modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::SHIFT_MASK;
+        if key == gdk::Key::Menu || (key == gdk::Key::F10 && shift_only) {
+            show_menu(&window_state, active, panel.cursor_menu_target());
             return glib::Propagation::Stop;
         }
         // The file operation keys. Handled here rather than as accelerators,
@@ -1106,7 +1155,11 @@ struct PendingConflict {
 /// F5, F6: asks, then copies or moves the marked files (or the one under
 /// the cursor) into the other panel's folder.
 fn start_transfer(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind) {
-    let sources = panel.files_to_act_on();
+    transfer_to_other_panel(state, panel, kind, panel.files_to_act_on());
+}
+
+/// Asks, then copies or moves `sources` from `panel` into the other panel's folder.
+fn transfer_to_other_panel(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind, sources: Vec<gio::File>) {
     if sources.is_empty() {
         return;
     }
@@ -1164,6 +1217,19 @@ fn confirm_transfer(
     sources: Vec<gio::File>,
     dest_dir: gio::File,
 ) {
+    confirm_transfer_then(state, origin, kind, sources, dest_dir, || {});
+}
+
+/// `confirm_transfer`, running `then` once the operation has been started
+/// (pasting cut files then empties the clipboard).
+fn confirm_transfer_then(
+    state: &Rc<State>,
+    origin: Option<Rc<Panel>>,
+    kind: Kind,
+    sources: Vec<gio::File>,
+    dest_dir: gio::File,
+    then: impl Fn() + 'static,
+) {
     let names: Vec<String> = sources.iter().map(file_name).collect();
     let dest_name = file_name(&dest_dir);
     let location = dest_dir.parse_name();
@@ -1187,6 +1253,156 @@ fn confirm_transfer(
             neighbour: origin.as_ref().and_then(|panel| panel.neighbour_after(&sources)),
         };
         state.transfers.borrow_mut().insert(id, transfer);
+        then();
+    });
+}
+
+// --- Right-click menu and clipboard ---
+
+/// Shows the right-click menu of panel `index` for `target`. The panel
+/// becomes the active one; ".." and empty space get the folder's menu.
+fn show_menu(state: &Rc<State>, index: usize, target: MenuTarget) {
+    let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+    if window.is_some_and(|window| window.visible_dialog().is_some()) {
+        return;
+    }
+    let panel = state.panels[index].clone();
+    panel.close_search();
+    if state.active.get() != index || state.sidebar.has_focus() {
+        state.activate(index, true);
+    }
+    let on = match &target.entry {
+        None => menu::On::Background,
+        Some(info) if info.file_type() == gio::FileType::Directory => menu::On::Folder,
+        Some(_) => menu::On::File,
+    };
+    let context = menu::Context {
+        on,
+        count: target.files.len(),
+        can_paste: state.clipboard.has_files(),
+    };
+    let at = target.at;
+    let state_weak = Rc::downgrade(state);
+    let panel_weak = Rc::downgrade(&panel);
+    let on_closed = Rc::downgrade(state);
+    menu::popup(
+        panel.widget(),
+        &context,
+        &at,
+        move |command| {
+            if let (Some(state), Some(panel)) = (state_weak.upgrade(), panel_weak.upgrade()) {
+                run_command(&state, &panel, &target, command);
+            }
+        },
+        // Back to the list, unless the chosen item opened a dialog.
+        move || {
+            if let Some(state) = on_closed.upgrade()
+                && !state.sidebar.has_focus()
+            {
+                state.focus_panel();
+            }
+        },
+    );
+}
+
+/// Runs the right-click menu's `command` on `target` in `panel`, the same
+/// way as its key (same questions, operations queue and toasts).
+fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, command: Command) {
+    let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+    if window.is_some_and(|window| window.visible_dialog().is_some()) {
+        return;
+    }
+    let files = target.files.clone();
+    let clicked = target.entry.as_ref().and_then(entry_file);
+    match command {
+        // The clicked row has the cursor: these act on it, like their keys.
+        Command::Open => panel.open_cursor(),
+        Command::Preview => {
+            if state.previewing.get().is_none() {
+                state.toggle_preview();
+            }
+        }
+        Command::Edit => panel.edit(),
+        Command::Rename => rename(state, panel),
+        Command::OpenWith => {
+            if let (Some(info), Some(file)) = (&target.entry, clicked) {
+                open_with(state, info, &file);
+            }
+        }
+        Command::Terminal => match clicked {
+            Some(folder) => panel.open_terminal_in(&folder),
+            None => panel.open_terminal(),
+        },
+        Command::Cut => state.clipboard.put(&files, true),
+        Command::Copy => state.clipboard.put(&files, false),
+        Command::Paste => {
+            if let Some(folder) = panel.folder() {
+                paste(state, folder);
+            }
+        }
+        Command::PasteInto => {
+            if let Some(folder) = clicked {
+                paste(state, folder);
+            }
+        }
+        Command::CopyToOther => transfer_to_other_panel(state, panel, Kind::Copy, files),
+        Command::MoveToOther => transfer_to_other_panel(state, panel, Kind::Move, files),
+        Command::Trash => ask_to_trash(state, panel, files),
+        Command::Delete => delete_permanently(state, panel, files, false),
+        Command::AddFavourite => {
+            if let Some(folder) = clicked {
+                state.sidebar.add_folder(&folder);
+            }
+        }
+        Command::NewFolder => new_folder(state, panel),
+    }
+}
+
+/// Open With…: lets the user choose the app to open `file` with.
+fn open_with(state: &Rc<State>, info: &gio::FileInfo, file: &gio::File) {
+    // The listing only knows the type from the name ("fast" content type).
+    let content_type = info
+        .attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE)
+        .or_else(|| info.content_type())
+        .map(|kind| kind.to_string())
+        .unwrap_or_else(|| gio::content_type_guess(Some(info.name()), None::<&[u8]>).0.to_string());
+    let state_weak = Rc::downgrade(state);
+    openwith::present(&state.panels_box, file, &info.display_name(), &content_type, move |message| {
+        if let Some(state) = state_weak.upgrade() {
+            state.toast(&message);
+        }
+    });
+}
+
+/// Ctrl+V and Paste: copies the files on the clipboard into `dest`, or
+/// moves them if they were cut, after the same question as F5 and F6.
+/// After cut files have gone on their way, the clipboard is emptied (as in
+/// GNOME Files), so a second paste has nothing to move.
+fn paste(state: &Rc<State>, dest: gio::File) {
+    let state = state.clone();
+    glib::spawn_future_local(async move {
+        let Some((files, cut)) = state.clipboard.files().await else {
+            return state.toast(dialogs::NOTHING_TO_PASTE);
+        };
+        let files: Vec<gio::File> = files.into_iter().filter(crate::dnd::is_droppable).collect();
+        let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+        if window.is_some_and(|window| window.visible_dialog().is_some()) {
+            return;
+        }
+        match clipboard::plan_paste(cut, &files, &dest) {
+            PastePlan::Nothing if files.is_empty() => state.toast(dialogs::NOTHING_TO_PASTE),
+            PastePlan::Nothing => {}
+            PastePlan::IntoItself => state.toast(dialogs::INTO_ITSELF),
+            PastePlan::Transfer(kind) => {
+                let origin = origin_panel(&state, &files);
+                let clipboard = state.clipboard.clone();
+                confirm_transfer_then(&state, origin, kind, files, dest, move || {
+                    if cut {
+                        clipboard.clear();
+                    }
+                });
+            }
+        }
     });
 }
 
@@ -1391,6 +1607,12 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
 
+    let clipboard = adw::ShortcutsSection::new(Some("Clipboard and Menu"));
+    clipboard.add(adw::ShortcutsItem::new("Cut the files", "<Control>x"));
+    clipboard.add(adw::ShortcutsItem::new("Copy the files", "<Control>c"));
+    clipboard.add(adw::ShortcutsItem::new("Paste into this folder", "<Control>v"));
+    clipboard.add(adw::ShortcutsItem::new("Open the menu for the file under the cursor", "Menu <Shift>F10"));
+
     let favourites = adw::ShortcutsSection::new(Some("Favourites"));
     favourites.add(adw::ShortcutsItem::new("Show or hide the favourites", "F1"));
     favourites.add(adw::ShortcutsItem::new("Add the current folder to the favourites", "<Control>d"));
@@ -1442,6 +1664,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     dialog.add(search);
     dialog.add(marking);
     dialog.add(files);
+    dialog.add(clipboard);
     dialog.add(general);
     dialog
 }

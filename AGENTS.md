@@ -74,6 +74,13 @@ Module map (`src/`):
 - `fkeybar.rs` — the function-key bar at the bottom.
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
   messages (with tests).
+- `menu.rs` — the panels' right-click menu (Menu key, Shift+F10): which
+  items appear where (tested) and showing it; `window.rs` runs the items
+  (`run_command`) through the same code as their keys.
+- `clipboard.rs` — cut, copy and paste of files through the system
+  clipboard in GNOME Files's formats (`x-special/gnome-copied-files` and
+  the file list), what a paste does (tested), and which files look cut.
+- `openwith.rs` — the Open With… dialog (apps for a file's type from GIO).
 - `dnd.rs` — drag-and-drop rules (copy or move, where it lands), tested.
 - `jobs.rs` — runs copy/move requests one after another on a worker thread
   and passes events back to the main loop.
