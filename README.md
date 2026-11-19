@@ -24,6 +24,13 @@ _Screenshot: to be added._
 - Rename (F2), new folder (F7), copy (F5) and move (F6) to the other panel,
   move to the trash (F8 or Delete, with Undo) or delete permanently
   (Shift+F8 or Shift+Delete).
+- Right-click menu on files, folders and empty space, as in GNOME Files
+  (also with the Menu key or Shift+F10): open, Open With… (choose the app),
+  preview, cut, copy and paste, copy or move to the other panel, rename,
+  trash, delete, add a folder to the favourites, open a terminal there.
+- Cut, copy and paste files with Ctrl+X, Ctrl+C and Ctrl+V, also between
+  Kommander and GNOME Files (or other apps). Cut files look faded until
+  they are pasted. Pasting asks first, like F5 and F6.
 - Copies and moves run in the background with progress, a queue and a
   cancel button. When a file of the same name already exists, it asks.
 - Drag and drop between the panels and to and from other apps.
@@ -72,6 +79,10 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 | F8 or Delete | Move to the trash |
 | Shift+F8 or Shift+Delete | Delete permanently |
 | Ctrl+J | Show copy and move operations |
+| Ctrl+X | Cut the marked files (or the one under the cursor) |
+| Ctrl+C | Copy the marked files (or the one under the cursor) |
+| Ctrl+V | Paste into this folder |
+| Menu or Shift+F10 | Open the right-click menu for the file under the cursor |
 | Ctrl or Shift while dropping | Copy, or move |
 | Ctrl+, | Preferences |
 | Ctrl+? | Keyboard shortcuts |
