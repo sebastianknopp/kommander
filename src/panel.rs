@@ -1057,12 +1057,24 @@ impl Panel {
         );
         launcher.set_cwd(&path);
         launcher.setenv("PWD", &path, true);
-        // The folder is also given as an option: a terminal that keeps one
-        // process for all its windows (Ghostty on Omarchy) opens the new
-        // window from that process and never sees the folder we start in.
+        // A terminal that keeps one process for all its windows (Ghostty on
+        // Omarchy) opens the new window from that process: it never sees the
+        // folder we start in, and it ignores the folder given as an option
+        // too (tried). What does arrive is a command to run, so the terminal
+        // is asked to run the user's shell, started in the folder by `env`.
         let mut dir = std::ffi::OsString::from("--dir=");
         dir.push(&path);
-        if let Err(error) = launcher.spawn(&[OsStr::new("xdg-terminal-exec"), dir.as_os_str()]) {
+        let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+        let command = [
+            OsStr::new("xdg-terminal-exec"),
+            dir.as_os_str(),
+            OsStr::new("--"),
+            OsStr::new("env"),
+            OsStr::new("-C"),
+            path.as_os_str(),
+            shell.as_os_str(),
+        ];
+        if let Err(error) = launcher.spawn(&command) {
             eprintln!("Could not start xdg-terminal-exec: {error}");
             toast(&self.root, "Could not open a terminal");
         }
