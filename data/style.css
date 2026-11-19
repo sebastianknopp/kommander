@@ -11,7 +11,8 @@
 /* Path strip above each file list, holding the breadcrumbs.
  * Inactive panel: flat with dimmed text. Active panel: accent-tinted strip
  * with full-strength text and an orange line under it, so the active side
- * reads at a glance. The orange is libadwaita's own palette colour. */
+ * reads at a glance. The orange is libadwaita's own palette colour (the
+ * Omarchy theme's orange when following it, see theme.rs). */
 .panel .path-strip {
   --strip-bg-color: var(--view-bg-color);
   background-color: var(--strip-bg-color);
@@ -326,6 +327,14 @@
   font-size: 0.9em;
 }
 
+/* The text sits on the pane's own background, not on the source view
+ * scheme's grey (which differs from an Omarchy theme's); the scheme still
+ * colours the syntax. */
+.preview .preview-text > text {
+  background-color: var(--view-bg-color);
+  color: var(--view-fg-color);
+}
+
 .preview .preview-pdf {
   padding: 12px;
 }
@@ -333,4 +342,61 @@
 /* Pages are paper: a thin outline keeps them apart from a light background. */
 .preview .preview-pdf-page {
   outline: 1px solid var(--border-color);
+}
+
+/* --- Translucent window (Preferences), after Omarchy's rule for Files ---
+ * Omarchy makes GNOME Files see-through with a Hyprland window rule
+ * (opacity 0.985 focused, 0.96 unfocused, text included). Here only the
+ * backgrounds let the desktop through; text and icons stay solid, so they
+ * can be a touch more see-through than that. The window itself draws
+ * nothing; each area on top of it (header bar, function-key bar, panels,
+ * favourites) draws its usual colour see-through, so no two layers stack
+ * up. Dialogs, popovers, menus and toasts are left solid. The main-window
+ * and translucent classes are set in theme.rs. */
+window.main-window.translucent {
+  --translucent-alpha: 95%;
+  background-color: transparent;
+}
+
+window.main-window.translucent:backdrop {
+  --translucent-alpha: 90%;
+}
+
+window.main-window.translucent toolbarview > .top-bar.raised,
+window.main-window.translucent toolbarview > .bottom-bar.raised {
+  background-color: color-mix(in srgb, var(--headerbar-bg-color) var(--translucent-alpha), transparent);
+}
+
+window.main-window.translucent:backdrop toolbarview > .top-bar.raised,
+window.main-window.translucent:backdrop toolbarview > .bottom-bar.raised {
+  background-color: color-mix(in srgb, var(--headerbar-backdrop-color) var(--translucent-alpha), transparent);
+}
+
+window.main-window.translucent .panels.view {
+  background-color: color-mix(in srgb, var(--view-bg-color) var(--translucent-alpha), transparent);
+}
+
+window.main-window.translucent .favourites {
+  background-color: color-mix(in srgb, var(--sidebar-bg-color) var(--translucent-alpha), transparent);
+}
+
+/* Inside the panels, surfaces would stack on the panels' own background:
+ * the path strips keep only their accent tint, the preview's text none. */
+window.main-window.translucent .panel .path-strip {
+  --strip-bg-color: transparent;
+}
+
+window.main-window.translucent .panel.active .path-strip {
+  --strip-bg-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+/* With no solid strip colour, a long path's start is simply cut off
+ * instead of fading out. */
+window.main-window.translucent .path-strip scrolledwindow undershoot.left,
+window.main-window.translucent .path-strip scrolledwindow undershoot.right {
+  background: none;
+}
+
+window.main-window.translucent .preview .preview-text > text {
+  background: none;
 }

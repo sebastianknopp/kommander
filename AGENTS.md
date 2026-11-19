@@ -93,6 +93,12 @@ Module map (`src/`):
   out in `window.rs` (`sidebar_key`).
 - `preferences.rs` — the Preferences dialog.
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file).
+- `theme.rs` — colours from the Omarchy theme
+  (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
+  CSS builder) laid over libadwaita's colour variables, followed live by
+  watching Omarchy's `current` folder (a theme switch replaces the `theme`
+  folder); and the translucent window (classes on the main window, rules in
+  `style.css`).
 
 ## Conventions
 
@@ -110,7 +116,12 @@ Module map (`src/`):
   up). Its tests cover them; add a test with any change there.
 - **No hard-coded colours.** Use libadwaita's CSS variables
   (`var(--accent-bg-color)` and so on) so light, dark and accent colours
-  follow the system.
+  follow the system. Every colour comes either from the Omarchy theme file
+  (only `theme.rs` reads it, and it only redefines those variables) or from
+  libadwaita; `color-mix()` with `transparent` is fine. New styling should
+  use the variables, never the theme's keys, so it works in both settings.
+  (The one synchronous read on the main thread is the theme's small
+  colors.toml at start-up, so the window never opens in the wrong colours.)
 - **UI is built in Rust code** (no .ui or Blueprint files); styling goes in
   `data/style.css` via CSS classes.
 - **User-facing wording** lives in functions in `dialogs.rs` with unit tests;

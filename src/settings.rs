@@ -71,6 +71,34 @@ pub struct Sort {
     pub descending: bool,
 }
 
+/// Where the app's colours come from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Colours {
+    /// The Omarchy desktop theme, followed live (plain libadwaita on a
+    /// computer without Omarchy, see theme.rs).
+    #[default]
+    Omarchy,
+    /// Plain libadwaita, as in GNOME.
+    Gnome,
+}
+
+impl Colours {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Colours::Omarchy => "omarchy",
+            Colours::Gnome => "gnome",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "omarchy" => Some(Colours::Omarchy),
+            "gnome" => Some(Colours::Gnome),
+            _ => None,
+        }
+    }
+}
+
 /// Key prefixes of the two panels' own settings ("left-folder" and so on).
 const PANEL_KEYS: [&str; 2] = ["left", "right"];
 
@@ -85,6 +113,9 @@ pub struct Settings {
     pub preview_in_window: bool,
     /// The favourites sidebar (F1) is shown.
     pub show_favourites: bool,
+    pub colours: Colours,
+    /// The window's backgrounds are slightly see-through.
+    pub translucent: bool,
 }
 
 impl Settings {
@@ -137,6 +168,10 @@ impl Settings {
             preview_in_window: boolean("preview-in-window")
                 .unwrap_or(defaults.preview_in_window),
             show_favourites: boolean("show-favourites").unwrap_or(defaults.show_favourites),
+            colours: string("colours")
+                .and_then(|v| Colours::parse(&v))
+                .unwrap_or(defaults.colours),
+            translucent: boolean("translucent-window").unwrap_or(defaults.translucent),
         }
     }
 
@@ -146,6 +181,8 @@ impl Settings {
         file.set_boolean(GROUP, "show-hidden", self.show_hidden);
         file.set_boolean(GROUP, "preview-in-window", self.preview_in_window);
         file.set_boolean(GROUP, "show-favourites", self.show_favourites);
+        file.set_string(GROUP, "colours", self.colours.as_str());
+        file.set_boolean(GROUP, "translucent-window", self.translucent);
         for (i, panel) in PANEL_KEYS.iter().enumerate() {
             let sort = self.sort[i];
             file.set_string(GROUP, &format!("{panel}-sort"), sort.column.as_str());
@@ -184,6 +221,8 @@ mod tests {
             folders: [Some("file:///tmp/a%20b".into()), None],
             preview_in_window: true,
             show_favourites: true,
+            colours: Colours::Gnome,
+            translucent: true,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
@@ -195,7 +234,8 @@ mod tests {
     fn broken_values_fall_back_to_defaults() {
         let file = glib::KeyFile::new();
         file.load_from_data(
-            "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n",
+            "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n\
+             colours=purple\ntranslucent-window=yes\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();

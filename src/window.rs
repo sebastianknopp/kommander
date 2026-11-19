@@ -19,7 +19,7 @@ use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
-use crate::{dialogs, fkeybar, ops, preferences};
+use crate::{dialogs, fkeybar, ops, preferences, theme};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
 struct State {
@@ -636,14 +636,13 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
             let (Some(window), Some(state)) = (window_weak.upgrade(), state_weak.upgrade()) else {
                 return;
             };
-            let icon_size = state.settings.borrow().icon_size;
-            let preview_in_window = state.settings.borrow().preview_in_window;
             let for_icons = Rc::downgrade(&state);
             let for_preview = Rc::downgrade(&state);
+            let for_colours = Rc::downgrade(&state);
+            let for_translucent = Rc::downgrade(&state);
             preferences::present(
                 &window,
-                icon_size,
-                preview_in_window,
+                &state.settings.borrow(),
                 move |size| {
                     if let Some(state) = for_icons.upgrade() {
                         state.apply_icon_size(size);
@@ -657,6 +656,20 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
                         state.close_preview();
                         preview::close_window();
                         state.settings.borrow_mut().preview_in_window = in_window;
+                        state.settings.borrow().save();
+                    }
+                },
+                move |colours| {
+                    theme::set_colours(colours);
+                    if let Some(state) = for_colours.upgrade() {
+                        state.settings.borrow_mut().colours = colours;
+                        state.settings.borrow().save();
+                    }
+                },
+                move |translucent| {
+                    theme::set_translucent(translucent);
+                    if let Some(state) = for_translucent.upgrade() {
+                        state.settings.borrow_mut().translucent = translucent;
                         state.settings.borrow().save();
                     }
                 },

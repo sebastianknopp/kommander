@@ -33,6 +33,10 @@ _Screenshot: to be added._
 - Open the file under the cursor in your text editor (F4), or a terminal in
   the current folder (Shift+F4).
 - Follows the system's light or dark style.
+- On Omarchy, takes its colours from the current Omarchy theme and changes
+  with it as you switch themes (Preferences > Colours; "GNOME" gives the
+  plain GNOME look). Optionally a slightly see-through window, like GNOME
+  Files on Omarchy (Preferences > Translucent Window).
 - Remembers each panel's folder and sorting, the hidden-files choice,
   whether the sidebar is shown and your preferences.
 
@@ -123,6 +127,26 @@ Sound files are played from local folders only, not from network locations.
 
 Start "Kommander" from the app launcher, or run `~/.local/bin/kommander`.
 
+## On Omarchy
+
+- **Colours.** Kommander reads the current Omarchy theme
+  (`~/.local/state/omarchy/current/theme/colors.toml`) and uses its
+  background, text, accent, yellow (marked files), orange (the line under
+  the active panel) and red (delete buttons). When you switch themes, the
+  window follows within a moment, without restarting. To keep the plain
+  GNOME look instead, choose Preferences > Colours > GNOME. Without Omarchy
+  the choice is greyed out and Kommander looks like any GNOME app.
+- **Translucent window.** Preferences > Translucent Window makes the
+  window's backgrounds slightly see-through, as Omarchy does for GNOME
+  Files; text and icons stay solid, dialogs and menus stay opaque. It needs
+  no change to your Hyprland settings. The alternative is Omarchy's own
+  window rule, which fades the whole window, text included: add this line
+  to `~/.config/hypr/looknfeel.lua` (leave the switch off then):
+
+  ```
+  o.transparent_window("io\\.github\\.sebastianknopp\\.Kommander")
+  ```
+
 ## Uninstall
 
 ```
@@ -146,7 +170,6 @@ These are planned but not built yet:
 - Looking inside archives (zip and others)
 - Renaming many files at once
 - Undo for copy and move
-- Omarchy theme colours
 
 ## Licence
 
