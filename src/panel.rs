@@ -4,16 +4,18 @@
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
+use crate::dnd::{self, DropCheck, Hover};
 use crate::marks::Marks;
+use crate::ops::transfer::Kind;
 use crate::pathbar::PathBar;
 use crate::settings::{Sort, SortColumn};
 
@@ -46,7 +48,18 @@ pub struct Panel {
     /// Name of an entry about to appear (a new or renamed file) to put the
     /// cursor on when it does.
     pending_cursor: Rc<RefCell<Option<PathBuf>>>,
+    /// A drag started in this panel is under way.
+    dragging: Cell<bool>,
+    /// What the drag about to start shows: the icon of the file under the
+    /// pointer, and how many files go along.
+    drag_icon: RefCell<Option<(gio::Icon, usize)>>,
+    /// The row (or the whole list) highlighted as the place a drop lands.
+    drop_highlight: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
+    /// Gets dropped files, the folder they go into, and copy or move.
+    on_drop: RefCell<Option<Rc<DropHandler>>>,
 }
+
+type DropHandler = dyn Fn(Vec<gio::File>, gio::File, Kind);
 
 impl Panel {
     pub fn new(folder: &gio::File, show_hidden: bool, sort: Sort) -> Rc<Self> {
@@ -152,6 +165,10 @@ impl Panel {
             active: Cell::new(false),
             cursor_target: RefCell::new(None),
             pending_cursor: Rc::default(),
+            dragging: Cell::new(false),
+            drag_icon: RefCell::default(),
+            drop_highlight: RefCell::default(),
+            on_drop: RefCell::default(),
         });
         panel.connect_signals();
         panel.open(folder, None);
@@ -274,27 +291,99 @@ impl Panel {
 
         // Ctrl+click toggles a row's mark without moving the cursor. Caught
         // before the row sees the click, so the row's own click (which would
-        // move the cursor) is cancelled.
+        // move the cursor) is cancelled. The mark changes on release, so
+        // that Ctrl held while starting a drag changes no marks.
         let ctrl_click = gtk::GestureClick::new();
         ctrl_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let ctrl_clicked = Rc::new(Cell::new(None));
         let weak = Rc::downgrade(self);
+        let pressed = ctrl_clicked.clone();
         ctrl_click.connect_pressed(move |gesture, _, x, y| {
+            pressed.set(None);
             let Some(panel) = weak.upgrade() else {
                 return;
             };
-            if !gesture
-                .current_event_state()
-                .contains(gtk::gdk::ModifierType::CONTROL_MASK)
-            {
+            if !gesture.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
                 return;
             }
-            let picked = panel.column_view.pick(x, y, gtk::PickFlags::DEFAULT);
-            if let Some(position) = picked.and_then(|widget| panel.marked.position_of(&widget)) {
+            if let Some((position, _)) = panel.row_at(x, y) {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
+                pressed.set(Some(position));
+            }
+        });
+        let weak = Rc::downgrade(self);
+        ctrl_click.connect_released(move |_, _, _, _| {
+            if let (Some(panel), Some(position)) = (weak.upgrade(), ctrl_clicked.take()) {
                 panel.toggle_mark(position);
             }
         });
-        self.column_view.add_controller(ctrl_click);
+        self.column_view.add_controller(ctrl_click.clone());
+
+        // Dragging files out of the panel, to the other one or to other
+        // apps. Starting a drag resets the Ctrl+click above, so no mark
+        // changes; the two share the click, so a drag can start with Ctrl
+        // held. A click without moving the mouse never starts a drag.
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        drag.connect_prepare(move |_, x, y| weak.upgrade()?.prepare_drag(x, y));
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_begin(move |_, drag| {
+            if let Some(panel) = weak.upgrade() {
+                panel.begin_drag(drag);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(panel) = weak.upgrade() {
+                panel.dragging.set(false);
+            }
+        });
+        self.column_view.add_controller(drag.clone());
+        drag.group_with(&ctrl_click);
+
+        // Dropping files onto the panel: into its folder, or into the
+        // folder row under the pointer. The files are read as soon as a
+        // drag comes in, to tell copy from move while hovering.
+        let drop = gtk::DropTarget::new(
+            gdk::FileList::static_type(),
+            gdk::DragAction::COPY | gdk::DragAction::MOVE,
+        );
+        drop.set_preload(true);
+        let weak = Rc::downgrade(self);
+        drop.connect_accept(move |_, drop| {
+            weak.upgrade().is_some_and(|panel| panel.accept_drop(drop))
+        });
+        let weak = Rc::downgrade(self);
+        drop.connect_enter(move |target, x, y| {
+            weak.upgrade().map_or(gdk::DragAction::empty(), |panel| panel.hover_drop(target, x, y))
+        });
+        let weak = Rc::downgrade(self);
+        drop.connect_motion(move |target, x, y| {
+            weak.upgrade().map_or(gdk::DragAction::empty(), |panel| panel.hover_drop(target, x, y))
+        });
+        let weak = Rc::downgrade(self);
+        drop.connect_drop(move |target, value, x, y| {
+            weak.upgrade().is_some_and(|panel| panel.take_drop(target, value, x, y))
+        });
+        // However the drag ends (dropped, cancelled with Escape, dropped
+        // elsewhere, left the window), the highlight goes.
+        let weak = Rc::downgrade(self);
+        drop.connect_leave(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.set_drop_highlight(None);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drop.connect_current_drop_notify(move |target| {
+            if target.current_drop().is_none()
+                && let Some(panel) = weak.upgrade()
+            {
+                panel.set_drop_highlight(None);
+            }
+        });
+        self.column_view.add_controller(drop);
 
         // Type-to-search: every change of the text jumps to the first match.
         let weak = Rc::downgrade(self);
@@ -676,6 +765,204 @@ impl Panel {
             .is_some_and(|info| is_parent_entry(&info))
     }
 
+    /// The row at `x`, `y` of the file list: its position, and the widget
+    /// picked there.
+    fn row_at(&self, x: f64, y: f64) -> Option<(u32, gtk::Widget)> {
+        let picked = self.column_view.pick(x, y, gtk::PickFlags::DEFAULT)?;
+        let position = self.marked.position_of(&picked)?;
+        Some((position, picked))
+    }
+
+    // --- Drag and drop ---
+
+    /// Whether a drag started in this panel is under way.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.get()
+    }
+
+    /// Calls `f` with the files dropped onto the panel, the folder they go
+    /// into and whether to copy or move them. Drops that would do nothing
+    /// never get here.
+    pub fn connect_files_dropped(&self, f: impl Fn(Vec<gio::File>, gio::File, Kind) + 'static) {
+        self.on_drop.replace(Some(Rc::new(f)));
+    }
+
+    /// The files a drag starting on row `position` carries: all marked
+    /// files if that row is marked, otherwise its own file.
+    fn files_to_drag(&self, position: u32) -> Vec<gio::File> {
+        let uris: Vec<Option<String>> = (0..self.selection.n_items())
+            .map(|i| self.entry(i).and_then(|info| entry_uri(&info)))
+            .collect();
+        let rows = drag_rows(position as usize, &uris, &self.marked.marks.borrow());
+        rows.into_iter()
+            .filter_map(|i| self.entry(i as u32))
+            .filter_map(|info| entry_file(&info))
+            .collect()
+    }
+
+    /// A drag is about to start at `x`, `y`: what it carries, if anything.
+    fn prepare_drag(&self, x: f64, y: f64) -> Option<gdk::ContentProvider> {
+        let (position, _) = self.row_at(x, y)?;
+        let files = self.files_to_drag(position);
+        if files.is_empty() {
+            return None;
+        }
+        let icon = self
+            .entry(position)
+            .and_then(|info| info.icon())
+            .unwrap_or_else(|| gio::ThemedIcon::new("text-x-generic").upcast());
+        self.drag_icon.replace(Some((icon, files.len())));
+        // Other apps receive this as a list of URIs ("text/uri-list").
+        Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()))
+    }
+
+    fn begin_drag(&self, drag: &gdk::Drag) {
+        self.dragging.set(true);
+        let Some((icon, count)) = self.drag_icon.take() else {
+            return;
+        };
+        if let Ok(drag_icon) = gtk::DragIcon::for_drag(drag).downcast::<gtk::DragIcon>() {
+            drag_icon.set_child(Some(&drag_picture(&icon, count)));
+            // Just below and right of the pointer, as GTK's own drag icons.
+            drag.set_hotspot(-2, -2);
+        }
+    }
+
+    /// Whether the panel takes a drag that comes in: files only, and not
+    /// while a dialog is open.
+    fn accept_drop(&self, drop: &gdk::Drop) -> bool {
+        let dialog_open = self
+            .root
+            .root()
+            .and_downcast::<adw::ApplicationWindow>()
+            .is_some_and(|window| window.visible_dialog().is_some());
+        !dialog_open
+            && self.folder().is_some()
+            && drop.formats().contains_type(gdk::FileList::static_type())
+    }
+
+    /// While a drag hovers at `x`, `y`: highlights where the files would
+    /// land and says whether they would be copied or moved (the pointer
+    /// shows it). Nothing is highlighted where a drop would do nothing.
+    fn hover_drop(&self, target: &gtk::DropTarget, x: f64, y: f64) -> gdk::DragAction {
+        // Files from another app may still be on their way.
+        let files = target
+            .value()
+            .and_then(|value| value.get::<gdk::FileList>().ok())
+            .map(|list| list.files());
+        match self.plan_drop(target, files, x, y) {
+            Ok(plan) => {
+                let highlight = plan.row.unwrap_or_else(|| self.column_view.clone().upcast());
+                self.set_drop_highlight(Some(highlight));
+                match plan.kind {
+                    Kind::Copy => gdk::DragAction::COPY,
+                    Kind::Move => gdk::DragAction::MOVE,
+                }
+            }
+            Err(_) => {
+                self.set_drop_highlight(None);
+                gdk::DragAction::empty()
+            }
+        }
+    }
+
+    /// Files were dropped at `x`, `y`: hands them on (the window asks
+    /// before copying or moving). Drops back where the files came from end
+    /// without a word.
+    fn take_drop(&self, target: &gtk::DropTarget, value: &glib::Value, x: f64, y: f64) -> bool {
+        self.set_drop_highlight(None);
+        let files = value.get::<gdk::FileList>().ok().map(|list| list.files());
+        match self.plan_drop(target, files, x, y) {
+            Ok(plan) => {
+                let Some(on_drop) = self.on_drop.borrow().clone() else {
+                    return false;
+                };
+                // Once the drag is over: the question comes after the drop.
+                glib::idle_add_local_once(move || on_drop(plan.files, plan.dest, plan.kind));
+                true
+            }
+            Err(Refusal::IntoItself) => {
+                toast(&self.root, "A folder can’t be put inside itself");
+                false
+            }
+            Err(Refusal::AlreadyThere | Refusal::Nothing) => false,
+        }
+    }
+
+    /// What a drop at `x`, `y` would do with `files` (None while they are
+    /// still on their way from another app).
+    fn plan_drop(
+        &self,
+        target: &gtk::DropTarget,
+        files: Option<Vec<gio::File>>,
+        x: f64,
+        y: f64,
+    ) -> Result<DropPlan, Refusal> {
+        let (Some(folder), Some(drop)) = (self.folder(), target.current_drop()) else {
+            return Err(Refusal::Nothing);
+        };
+        let files: Vec<gio::File> = match files {
+            Some(files) => {
+                let files: Vec<gio::File> = files.into_iter().filter(dnd::is_droppable).collect();
+                if files.is_empty() {
+                    return Err(Refusal::Nothing);
+                }
+                files
+            }
+            None => Vec::new(),
+        };
+
+        let row = self.row_at(x, y);
+        let hover = match &row {
+            None => Hover::Empty,
+            Some((position, _)) if self.is_parent_row(*position) => Hover::ParentRow,
+            Some((position, _)) => match self.entry(*position) {
+                Some(info) if is_dir(&info) => entry_file(&info).map_or(Hover::File, Hover::Folder),
+                _ => Hover::File,
+            },
+        };
+        let landing = dnd::landing(&hover, &folder, &files);
+        match dnd::check_drop(&files, &landing.dest) {
+            DropCheck::Go => {}
+            DropCheck::AlreadyThere => return Err(Refusal::AlreadyThere),
+            DropCheck::IntoItself => return Err(Refusal::IntoItself),
+        }
+
+        let kind = with_offer(&drop, |offer| {
+            let same_fs = files.first().is_some_and(|first| {
+                *offer
+                    .same_fs
+                    .entry(landing.dest.uri().into())
+                    .or_insert_with(|| dnd::same_file_system(first, &landing.dest))
+            });
+            // Ctrl and Shift as held now (this window has the keyboard
+            // while dragging between its panels).
+            let modifiers = drop
+                .device()
+                .seat()
+                .keyboard()
+                .map_or(gdk::ModifierType::empty(), |keyboard| keyboard.modifier_state());
+            dnd::drop_kind(offer.allowed, modifiers, same_fs)
+        })
+        .ok_or(Refusal::Nothing)?;
+
+        let row = row.filter(|_| landing.on_row).and_then(|(_, picked)| row_widget(&picked));
+        Ok(DropPlan { files, dest: landing.dest, kind, row })
+    }
+
+    /// Highlights `widget` (a row, or the whole list) as the place a drop
+    /// lands, and no longer whatever was highlighted before.
+    fn set_drop_highlight(&self, widget: Option<gtk::Widget>) {
+        let mut highlight = self.drop_highlight.borrow_mut();
+        if let Some(old) = highlight.take().and_then(|old| old.upgrade()) {
+            old.remove_css_class("drop-target");
+        }
+        if let Some(widget) = widget {
+            widget.add_css_class("drop-target");
+            *highlight = Some(widget.downgrade());
+        }
+    }
+
     // --- Type-to-search ---
 
     pub fn is_searching(&self) -> bool {
@@ -762,6 +1049,109 @@ fn select_row(column_view: &gtk::ColumnView, position: u32, focus: bool) {
     if focus {
         column_view.grab_focus();
     }
+}
+
+/// What a drop would do: put `files` into `dest` by copying or moving
+/// them, shown by highlighting `row` (or the whole list if None).
+struct DropPlan {
+    files: Vec<gio::File>,
+    dest: gio::File,
+    kind: Kind,
+    row: Option<gtk::Widget>,
+}
+
+/// Why a drop would do nothing.
+enum Refusal {
+    /// No files, or nothing the other app allows.
+    Nothing,
+    /// The files are in that folder already.
+    AlreadyThere,
+    /// A folder would go into itself.
+    IntoItself,
+}
+
+/// What is known about the drag over the window. Both panels see the same
+/// drop, and once a panel has said whether it would copy or move, the
+/// system narrows what the drop allows down to that; so what the other app
+/// allows is remembered from when the drag came in. Whether the files and a
+/// folder share a file system is only looked up once per drag.
+struct Offer {
+    drop: glib::WeakRef<gdk::Drop>,
+    allowed: gdk::DragAction,
+    same_fs: HashMap<String, bool>,
+}
+
+thread_local! {
+    static OFFER: RefCell<Option<Offer>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with what is known about `drop`, starting afresh for a new one.
+fn with_offer<T>(drop: &gdk::Drop, f: impl FnOnce(&mut Offer) -> T) -> T {
+    OFFER.with_borrow_mut(|offer| {
+        let known = offer.as_ref().and_then(|offer| offer.drop.upgrade());
+        let offer = match offer {
+            Some(offer) if known.as_ref() == Some(drop) => offer,
+            _ => offer.insert(Offer {
+                drop: drop.downgrade(),
+                // A drag from this window says itself what it allows.
+                allowed: drop.drag().map_or_else(|| drop.actions(), |drag| drag.actions()),
+                same_fs: HashMap::new(),
+            }),
+        };
+        f(offer)
+    })
+}
+
+/// The rows a drag starting on row `pressed` carries, given each row's URI
+/// (None for ".."): all marked rows, in list order, if `pressed` is marked;
+/// otherwise `pressed` alone; nothing on "..".
+fn drag_rows(pressed: usize, uris: &[Option<String>], marks: &Marks) -> Vec<usize> {
+    let Some(Some(uri)) = uris.get(pressed) else {
+        return Vec::new();
+    };
+    if !marks.contains(uri) {
+        return vec![pressed];
+    }
+    (0..uris.len())
+        .filter(|&i| uris[i].as_deref().is_some_and(|uri| marks.contains(uri)))
+        .collect()
+}
+
+/// The list row that `widget` is part of. (Safe here, unlike while rows
+/// are being built: rows under the pointer are complete.)
+fn row_widget(widget: &gtk::Widget) -> Option<gtk::Widget> {
+    let mut current = Some(widget.clone());
+    while let Some(widget) = current {
+        let parent = widget.parent();
+        if widget.css_name() == "row" && parent.as_ref().is_some_and(|p| p.css_name() == "listview")
+        {
+            return Some(widget);
+        }
+        current = parent;
+    }
+    None
+}
+
+/// What follows the pointer while dragging: the file's icon, with a badge
+/// counting the files when there are several.
+fn drag_picture(icon: &gio::Icon, count: usize) -> gtk::Widget {
+    let image = gtk::Image::from_gicon(icon);
+    image.set_pixel_size(32);
+    if count < 2 {
+        return image.upcast();
+    }
+    // Room for the badge on the icon's top right corner.
+    image.set_margin_top(8);
+    image.set_margin_end(8);
+    let badge = gtk::Label::builder()
+        .label(count.to_string())
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .css_classes(["drag-count", "numeric"])
+        .build();
+    let overlay = gtk::Overlay::builder().child(&image).build();
+    overlay.add_overlay(&badge);
+    overlay.upcast()
 }
 
 /// Shows a short message on the window's toast overlay.
@@ -1138,6 +1528,28 @@ mod tests {
         assert_eq!(find_match(&list, "b", Jump::Next(0)), Some(2));
         assert_eq!(find_match(&list, "a", Jump::Previous(1)), Some(1));
         assert_eq!(find_match(&[None], "x", Jump::First), None);
+    }
+
+    #[test]
+    fn a_drag_carries_the_row_or_all_marked_files() {
+        // Row 0 is "..", the others are files; b and d are marked.
+        let uris: Vec<Option<String>> = std::iter::once(None)
+            .chain(["a", "b", "c", "d"].map(|n| Some(format!("file:///x/{n}"))))
+            .collect();
+        let mut marks = Marks::default();
+        marks.toggle("file:///x/b");
+        marks.toggle("file:///x/d");
+        // An unmarked row: only that file, marks or not.
+        assert_eq!(drag_rows(1, &uris, &marks), [1]);
+        assert_eq!(drag_rows(3, &uris, &marks), [3]);
+        // A marked row: all marked files, in list order.
+        assert_eq!(drag_rows(4, &uris, &marks), [2, 4]);
+        assert_eq!(drag_rows(2, &uris, &marks), [2, 4]);
+        // ".." can't be dragged, nor anything outside the list.
+        assert!(drag_rows(0, &uris, &marks).is_empty());
+        assert!(drag_rows(9, &uris, &marks).is_empty());
+        // Nothing marked: the row itself.
+        assert_eq!(drag_rows(2, &uris, &Marks::default()), [2]);
     }
 
     #[test]

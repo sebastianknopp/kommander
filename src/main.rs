@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod dialogs;
+mod dnd;
 mod fkeybar;
 mod jobs;
 mod marks;

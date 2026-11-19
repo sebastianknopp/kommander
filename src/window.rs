@@ -221,6 +221,18 @@ pub fn build(app: &adw::Application) {
         });
     });
 
+    // Files dropped onto a panel go through the same question as F5 and
+    // F6. The active panel stays as it was (as in Nautilus, a drop does
+    // not move the focus); the drag started with a click into its panel.
+    for panel in &state.panels {
+        let state_weak = Rc::downgrade(&state);
+        panel.connect_files_dropped(move |sources, dest_dir, kind| {
+            if let Some(state) = state_weak.upgrade() {
+                files_dropped(&state, sources, dest_dir, kind);
+            }
+        });
+    }
+
     // Clicking into a panel makes it the active one.
     for (index, panel) in state.panels.iter().enumerate() {
         let state_weak = Rc::downgrade(&state);
@@ -742,8 +754,9 @@ struct Transfer {
     /// The names of the files asked for, and of the destination folder.
     names: Vec<String>,
     dest_name: String,
-    /// The panel the files came from, and the folder it showed then.
-    panel: Rc<Panel>,
+    /// The panel the files came from, and the folder it showed then (none
+    /// for files dropped from another app).
+    panel: Option<Rc<Panel>>,
     folder: Option<gio::File>,
     sources: Vec<gio::File>,
     /// The file the cursor was on, and where it goes if that one moves away.
@@ -769,12 +782,44 @@ fn start_transfer(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind) {
     let Some(dest_dir) = state.panels[1 - state.active.get()].folder() else {
         return;
     };
+    confirm_transfer(state, Some(panel.clone()), kind, sources, dest_dir);
+}
+
+/// Files dropped onto a panel: the same question and the same way on as
+/// F5 and F6. The panel the files were dragged from (if any) is treated
+/// like the active panel of F5 and F6: its marks go, its cursor moves on.
+fn files_dropped(state: &Rc<State>, sources: Vec<gio::File>, dest_dir: gio::File, kind: Kind) {
+    let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
+    if window.is_some_and(|window| window.visible_dialog().is_some()) {
+        return;
+    }
+    // The panel the drag started in; for files from another app, a panel
+    // that shows their folder (if any).
+    let parent = sources.first().and_then(|file| file.parent());
+    let shows_sources = |panel: &&Rc<Panel>| {
+        panel.folder().zip(parent.as_ref()).is_some_and(|(folder, parent)| folder.equal(parent))
+    };
+    let origin = (state.panels.iter())
+        .find(|panel| panel.is_dragging() && shows_sources(panel))
+        .or_else(|| state.panels.iter().find(shows_sources))
+        .cloned();
+    confirm_transfer(state, origin, kind, sources, dest_dir);
+}
+
+/// Asks, then copies or moves `sources` into `dest_dir`. `origin` is the
+/// panel they come from, if they come from one.
+fn confirm_transfer(
+    state: &Rc<State>,
+    origin: Option<Rc<Panel>>,
+    kind: Kind,
+    sources: Vec<gio::File>,
+    dest_dir: gio::File,
+) {
     let names: Vec<String> = sources.iter().map(file_name).collect();
     let dest_name = file_name(&dest_dir);
     let location = dest_dir.parse_name();
     let parent = state.panels_box.clone();
     let state = state.clone();
-    let panel = panel.clone();
     dialogs::confirm_transfer(&parent, kind, &names.clone(), &dest_name.clone(), &location, move || {
         let request = Request { kind, sources: sources.clone(), dest_dir: dest_dir.clone() };
         let id = state.jobs.submit(request);
@@ -784,11 +829,13 @@ fn start_transfer(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind) {
             kind,
             names: names.clone(),
             dest_name: dest_name.clone(),
-            panel: panel.clone(),
-            folder: panel.folder(),
+            panel: origin.clone(),
+            folder: origin.as_ref().and_then(|panel| panel.folder()),
             sources: sources.clone(),
-            cursor: panel.cursor_entry().and_then(|info| entry_file(&info)),
-            neighbour: panel.neighbour_after(&sources),
+            cursor: (origin.as_ref())
+                .and_then(|panel| panel.cursor_entry())
+                .and_then(|info| entry_file(&info)),
+            neighbour: origin.as_ref().and_then(|panel| panel.neighbour_after(&sources)),
         };
         state.transfers.borrow_mut().insert(id, transfer);
     });
@@ -859,8 +906,8 @@ impl State {
         // In the panel the files came from, the marks of the files that were
         // acted on go (others marked meanwhile stay), and if the file under
         // the cursor moved away, the cursor goes to its neighbour.
-        if !summary.done.is_empty() {
-            if_showing(&transfer.panel, &transfer.folder, |panel| {
+        if let Some(origin) = transfer.panel.as_ref().filter(|_| !summary.done.is_empty()) {
+            if_showing(origin, &transfer.folder, |panel| {
                 panel.unmark(&transfer.sources);
                 if let (Some(cursor), Some(neighbour)) = (&transfer.cursor, transfer.neighbour)
                     && gone.iter().any(|file| file.equal(cursor))
@@ -1020,6 +1067,10 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     files.add(adw::ShortcutsItem::new("Delete permanently", "<Shift>F8 <Shift>Delete"));
     files.add(adw::ShortcutsItem::new("Open a terminal here", "<Shift>F4"));
     files.add(adw::ShortcutsItem::new("Show copy and move operations", "<Control>j"));
+    files.add(adw::ShortcutsItem::new(
+        "Hold while dropping to copy, or to move",
+        "<Control> <Shift>",
+    ));
 
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new("Preferences", "<Control>comma"));
