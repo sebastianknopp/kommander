@@ -58,7 +58,8 @@ install -Dm644 "data/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg" \
 # ~/.local/bin is not on the PATH.
 mkdir -p "$APPS_DIR"
 while IFS= read -r line; do
-    [[ $line == Exec=* ]] && line="Exec=\"$BIN_DIR/kommander\""
+    # The arguments (" %U": folders to open) stay as they are.
+    [[ $line == Exec=* ]] && line="Exec=\"$BIN_DIR/kommander\"${line#Exec=kommander}"
     printf '%s\n' "$line"
 done <"data/$APP_ID.desktop" >"$APPS_DIR/$APP_ID.desktop"
 

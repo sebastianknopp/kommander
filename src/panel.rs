@@ -891,6 +891,12 @@ impl Panel {
         }
     }
 
+    /// Goes to `folder` with the cursor on the entry called `name` (a file
+    /// given on the command line).
+    pub fn go_to_file(self: &Rc<Self>, folder: &gio::File, name: PathBuf) {
+        self.open(folder, Some(name));
+    }
+
     /// Calls `f` whenever the panel goes to another folder.
     pub fn connect_folder_changed(&self, f: impl Fn() + 'static) {
         self.folder_changed.borrow_mut().push(Rc::new(f));

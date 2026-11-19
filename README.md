@@ -123,6 +123,56 @@ Sound files are played from local folders only, not from network locations.
 
 Start "Kommander" from the app launcher, or run `~/.local/bin/kommander`.
 
+To start in a particular folder, give it on the command line:
+
+```
+kommander ~/Downloads                 # left panel in Downloads
+kommander ~/Downloads ~/Documents     # left in Downloads, right in Documents
+kommander ~/Documents/letter.pdf      # its folder, with the cursor on the file
+```
+
+Paths and addresses (`file:///…`, `sftp://…` and so on) both work. Without a
+folder, both panels open where you left them. A folder that does not exist
+or cannot be reached gets a short message, and that panel opens where you
+left it.
+
+Kommander runs only once. If it is already open, `kommander some/folder`
+sends the active panel there and brings the window to the front, instead of
+opening a second window; `kommander` on its own just brings the window to
+the front.
+
+### As your file manager
+
+Kommander shows up under "Open With" for folders in other apps. To make it
+the file manager that opens folders everywhere (for example from a browser's
+downloads, or "Show in folder"):
+
+```
+xdg-mime default io.github.sebastianknopp.kommander.desktop inode/directory
+```
+
+To go back to GNOME Files:
+
+```
+xdg-mime default org.gnome.Nautilus.desktop inode/directory
+```
+
+### On Omarchy
+
+Omarchy opens GNOME Files with Super+Shift+F, and with Super+Alt+Shift+F in
+the folder of the terminal you are in. To have these two keys open Kommander
+instead, add these lines to `~/.config/hypr/bindings.lua`:
+
+```lua
+-- Kommander instead of GNOME Files.
+o.rebind("SUPER + SHIFT + F", "File manager", { launch = "kommander" })
+o.rebind("SUPER + ALT + SHIFT + F", "File manager (cwd)", [[uwsm-app -- kommander "$(omarchy-cmd-terminal-cwd)"]])
+```
+
+Hyprland picks up the change when the file is saved (`hyprctl reload`
+forces it, `hyprctl configerrors` shows any mistake). To go back to GNOME
+Files, delete the lines again.
+
 ## Uninstall
 
 ```

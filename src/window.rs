@@ -19,6 +19,7 @@ use crate::progress::Operations;
 use crate::settings::{IconSize, Settings};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
+use crate::start::{self, Target};
 use crate::{dialogs, fkeybar, ops, preferences};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
@@ -155,13 +156,92 @@ fn start_folder(uri: Option<&str>) -> gio::File {
         .unwrap_or_else(|| gio::File::for_path(glib::home_dir()))
 }
 
-pub fn build(app: &adw::Application) {
+/// Folders or files from the command line or another app ("Open With").
+/// Without a window yet, it opens with them (see `build`). Otherwise the
+/// window comes to the front and the first of them goes to its active panel.
+pub fn open(app: &adw::Application, files: &[gio::File]) {
+    let window = app.windows().into_iter().find_map(|window| window.downcast::<adw::ApplicationWindow>().ok());
+    let Some(window) = window else {
+        return build(app, files);
+    };
+    window.present();
+    if let Some(file) = files.first() {
+        ActionGroupExt::activate_action(&window, "open-argument", Some(&file.uri().to_variant()));
+    }
+}
+
+/// The action behind `open` for a window that is already open. The file is
+/// looked up without blocking; one that is not there only gets a toast.
+fn add_open_action(window: &adw::ApplicationWindow, state: &Rc<State>) {
+    let state_weak = Rc::downgrade(state);
+    let open_argument = gio::ActionEntry::builder("open-argument")
+        .parameter_type(Some(glib::VariantTy::STRING))
+        .activate(move |_, _, parameter| {
+            let Some(uri) = parameter.and_then(|parameter| parameter.get::<String>()) else {
+                return;
+            };
+            let file = gio::File::for_uri(&uri);
+            let state_weak = state_weak.clone();
+            glib::spawn_future_local(async move {
+                let result = start::resolve_async(&file).await;
+                let Some(state) = state_weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(target) => {
+                        if let Some(index) = start::panel_for(0, Some(state.active.get())) {
+                            state.go_to_target(index, &target);
+                        }
+                    }
+                    Err(error) => state.toast(&not_opened(&file, &error)),
+                }
+            });
+        })
+        .build();
+    window.add_action_entries([open_argument]);
+}
+
+/// The toast for an argument that cannot be opened.
+fn not_opened(file: &gio::File, error: &glib::Error) -> String {
+    dialogs::failed(&[start::display_name(file)], "open", "opened", &dialogs::reason(error))
+}
+
+impl State {
+    /// Panel `index` goes to `target`'s folder, cursor on its file if any.
+    fn go_to_target(&self, index: usize, target: &Target) {
+        let panel = &self.panels[index];
+        match target.cursor_on() {
+            Some(name) => panel.go_to_file(target.folder(), name),
+            None => panel.go_to(target.folder()),
+        }
+    }
+}
+
+/// Builds the window. `files` are the folders (or files) given on the
+/// command line: the first opens in the left panel, the second in the
+/// right; a panel without one starts in its remembered folder. Like any
+/// other folder, they are what is remembered when the window closes.
+pub fn build(app: &adw::Application, files: &[gio::File]) {
     let settings = Settings::load();
+    let mut targets: [Option<Target>; 2] = [None, None];
+    let mut not_found = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let Some(i) = start::panel_for(index, None) else {
+            break;
+        };
+        match start::resolve(file) {
+            Ok(target) => targets[i] = Some(target),
+            Err(error) => not_found.push(not_opened(file, &error)),
+        }
+    }
     // Recently visited folders, remembered for both panels.
     let listings = Rc::new(Listings::default());
     let panels = [0, 1].map(|i| {
         Panel::new(
-            &start_folder(settings.folders[i].as_deref()),
+            &targets[i].as_ref().map_or_else(
+                || start_folder(settings.folders[i].as_deref()),
+                |target| target.folder().clone(),
+            ),
             settings.show_hidden,
             settings.sort[i],
             listings.clone(),
@@ -529,9 +609,21 @@ pub fn build(app: &adw::Application) {
 
     add_app_actions(app, &window, &state);
     add_window_actions(app, &window, &state);
+    add_open_action(&window, &state);
 
     window.present();
     state.activate(0, true);
+    // A file given on the command line: the cursor goes onto it.
+    for (i, target) in targets.iter().enumerate() {
+        if let Some(target) = target
+            && target.cursor_on().is_some()
+        {
+            state.go_to_target(i, target);
+        }
+    }
+    for text in not_found {
+        state.toast(&text);
+    }
 }
 
 /// Ctrl, Alt, Super and Shift.

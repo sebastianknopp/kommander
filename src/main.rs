@@ -15,15 +15,22 @@ mod preview;
 mod progress;
 mod settings;
 mod sidebar;
+mod start;
 mod window;
 
 use adw::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 
 const APP_ID: &str = "io.github.sebastianknopp.kommander";
 
 fn main() -> glib::ExitCode {
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // One instance: a second `kommander` (or "Open With" in another app)
+    // hands its folders to the running one over D-Bus ("open"), or, with
+    // none, just brings its window forward ("activate").
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
 
     app.connect_startup(|_| {
         load_css();
@@ -31,8 +38,9 @@ fn main() -> glib::ExitCode {
     });
     app.connect_activate(|app| match app.active_window() {
         Some(window) => window.present(),
-        None => window::build(app),
+        None => window::build(app, &[]),
     });
+    app.connect_open(|app, files, _| window::open(app, files));
 
     app.run()
 }
