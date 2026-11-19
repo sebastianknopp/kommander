@@ -26,11 +26,16 @@ _Screenshot: to be added._
   (Shift+F8 or Shift+Delete).
 - Right-click menu on files, folders and empty space, as in GNOME Files
   (also with the Menu key or Shift+F10): open, Open With… (choose the app),
-  preview, cut, copy and paste, copy or move to the other panel, rename,
-  trash, delete, add a folder to the favourites, open a terminal there.
+  preview, cut, copy and paste, copy path, copy or move to the other panel,
+  rename, trash, delete, add a folder to the favourites, open a terminal
+  there.
 - Cut, copy and paste files with Ctrl+X, Ctrl+C and Ctrl+V, also between
   Kommander and GNOME Files (or other apps). Cut files look faded until
   they are pasted. Pasting asks first, like F5 and F6.
+- Copy the path of files or of the current folder as text (Ctrl+Shift+C,
+  the right-click menu, or double-click the path strip on top of a
+  panel); "Copied" flashes in the strip. Network locations are copied as
+  their address (smb://…), several files one per line.
 - Copies and moves run in the background with progress, a queue and a
   cancel button. When a file of the same name already exists, it asks.
 - Drag and drop between the panels and to and from other apps.
@@ -86,6 +91,7 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 | Ctrl+X | Cut the marked files (or the one under the cursor) |
 | Ctrl+C | Copy the marked files (or the one under the cursor) |
 | Ctrl+V | Paste into this folder |
+| Ctrl+Shift+C | Copy the path of the marked files (or the one under the cursor; on ".." this folder) |
 | Menu or Shift+F10 | Open the right-click menu for the file under the cursor |
 | Ctrl or Shift while dropping | Copy, or move |
 | Ctrl+, | Preferences |

@@ -69,6 +69,27 @@
   padding: 0 1px;
 }
 
+/* "Copied" pill, flashed over the start of the path strip after Copy Path:
+ * a small libadwaita-style tag in the accent colours, readable on the tinted
+ * active strip and the flat inactive one. Fades in quickly, out slowly. */
+.path-strip .copied-pill {
+  margin-left: 2px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: smaller;
+  font-weight: bold;
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  box-shadow: 0 1px 3px var(--shade-color);
+  opacity: 0;
+  transition: opacity 300ms ease-in;
+}
+
+.path-strip .copied-pill.shown {
+  opacity: 1;
+  transition: opacity 120ms ease-out;
+}
+
 /* Type-to-search field, docked at the bottom of the panel in place of the
  * status line. */
 .panel .search-bar {
