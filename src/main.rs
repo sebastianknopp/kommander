@@ -7,6 +7,7 @@ mod dnd;
 mod fkeybar;
 mod jobs;
 mod listings;
+mod location;
 mod marks;
 mod menu;
 mod openwith;

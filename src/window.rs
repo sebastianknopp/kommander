@@ -18,7 +18,7 @@ use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary}
 use crate::menu::{self, Command};
 use crate::panel::{MenuTarget, Panel, entry_file};
 use crate::progress::Operations;
-use crate::settings::{IconSize, Settings};
+use crate::settings::{IconSize, Settings, WindowSize};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
 use crate::start::{self, Target};
@@ -140,6 +140,27 @@ impl State {
         }
     }
 
+    /// A path is being typed in the active panel (Ctrl+L). The keys of
+    /// the window's accelerators (Ctrl+H, Ctrl+D, F4, Shift+F4) reach
+    /// their actions before the key handler sees them, so those actions
+    /// check this themselves.
+    fn typing_path(&self) -> bool {
+        self.panels[self.active.get()].is_typing_path()
+    }
+
+    /// Notes the window's size for the next start: the size it has when not
+    /// maximised (GTK keeps that as the default size, also while
+    /// maximised), so that un-maximising after a restart gives it back.
+    /// Left as it was while the window is fullscreen. (On a tiling desktop
+    /// such as Hyprland the compositor decides the size anyway.)
+    fn remember_size(&self, window: &adw::ApplicationWindow) {
+        if window.is_fullscreen() {
+            return;
+        }
+        let (width, height) = window.default_size();
+        self.settings.borrow_mut().window = WindowSize::checked(width, height, window.is_maximized());
+    }
+
     /// Saves the settings, together with each panel's folder and sort order.
     fn save_settings(&self) {
         let mut settings = self.settings.borrow_mut();
@@ -219,11 +240,7 @@ fn not_opened(file: &gio::File, error: &glib::Error) -> Problem {
 impl State {
     /// Panel `index` goes to `target`'s folder, cursor on its file if any.
     fn go_to_target(&self, index: usize, target: &Target) {
-        let panel = &self.panels[index];
-        match target.cursor_on() {
-            Some(name) => panel.go_to_file(target.folder(), name),
-            None => panel.go_to(target.folder()),
-        }
+        self.panels[index].go_to_target(target);
     }
 }
 
@@ -377,11 +394,14 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     toolbar_view.add_bottom_bar(state.operations.strip());
     toolbar_view.add_bottom_bar(&fkeybar::build());
 
+    // The size it had when last closed (see `remember_size`).
+    let size = state.settings.borrow().window;
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Kommander")
-        .default_width(1200)
-        .default_height(760)
+        .default_width(size.width)
+        .default_height(size.height)
+        .maximized(size.maximized)
         .content(&toolbar_view)
         .build();
 
@@ -398,7 +418,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     // Both panels' folders are remembered when the window closes. While
     // copies or moves are running, it first asks whether to stop them.
     let state_weak = Rc::downgrade(&state);
-    window.connect_close_request(move |_| {
+    window.connect_close_request(move |window| {
         let Some(state) = state_weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
@@ -409,6 +429,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             }
             return glib::Propagation::Stop;
         }
+        state.remember_size(window);
         state.save_settings();
         glib::Propagation::Proceed
     });
@@ -501,6 +522,21 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         }
         let active = window_state.active.get();
         let panel = &window_state.panels[active];
+
+        // While a path is being typed (Ctrl+L), the field has the keys:
+        // none of the panel's keys below may act, and Ctrl+C/X/V/A edit
+        // the text.
+        if panel.is_typing_path() {
+            return panel.location_key(key, modifiers);
+        }
+        // Ctrl+L: type a path, as in GNOME Files (also from the sidebar).
+        if modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+            && key.to_lower() == gdk::Key::l
+        {
+            panel.close_search();
+            panel.edit_location();
+            return glib::Propagation::Stop;
+        }
 
         // Ctrl+Space pauses or resumes the video or sound in the preview.
         if !panel.is_searching()
@@ -911,6 +947,9 @@ fn add_window_actions(
             let Some(state) = state_weak.upgrade() else {
                 return;
             };
+            if state.typing_path() {
+                return;
+            }
             let show = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
             action.set_state(&show.to_variant());
             for panel in &state.panels {
@@ -928,6 +967,7 @@ fn add_window_actions(
         .activate(move |_, _, _| {
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
+                && !state.typing_path()
             {
                 state.panels[state.active.get()].edit();
             }
@@ -940,6 +980,7 @@ fn add_window_actions(
         .activate(move |_, _, _| {
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
+                && !state.typing_path()
             {
                 state.panels[state.active.get()].open_terminal();
             }
@@ -981,6 +1022,7 @@ fn add_window_actions(
                 return;
             };
             if window.visible_dialog().is_none()
+                && !state.typing_path()
                 && let Some(folder) = state.panels[state.active.get()].folder()
             {
                 state.sidebar.add_folder(&folder);
@@ -1842,6 +1884,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
     panels.add(adw::ShortcutsItem::new("Open folder or file", "Return"));
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
+    panels.add(adw::ShortcutsItem::new("Type a path to go to", "<Control>l"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
 
     let clipboard = adw::ShortcutsSection::new(Some("Clipboard and Menu"));

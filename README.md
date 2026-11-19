@@ -20,6 +20,10 @@ _Screenshot: to be added._
   drop folders between the favourites to add them, drag a favourite to
   reorder, drop files onto an entry to copy or move them there.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
+- Type or paste a path (Ctrl+L), as in GNOME Files: a folder, a file (the
+  cursor lands on it), `~/…`, a path relative to the current folder, or an
+  address such as `smb://server/share` (connected first if needed). Tab
+  completes folder names.
 - Mark several files with Space or Insert, then act on all of them.
 - Rename (F2), new folder (F7), copy (F5) and move (F6) to the other panel,
   move to the trash (F8 or Delete, with Undo) or delete permanently
@@ -50,7 +54,7 @@ _Screenshot: to be added._
   plain GNOME look). Optionally a slightly see-through window, like GNOME
   Files on Omarchy (Preferences > Translucent Window).
 - Remembers each panel's folder and sorting, the hidden-files choice,
-  whether the sidebar is shown and your preferences.
+  whether the sidebar is shown, the window's size and your preferences.
 
 ## Keyboard
 
@@ -62,6 +66,7 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 | Up, Down | Move the cursor |
 | Enter | Open folder or file |
 | Backspace | Go to the parent folder |
+| Ctrl+L | Type a path to go to (Enter goes, Escape cancels, Tab completes) |
 | Ctrl+H | Show hidden files |
 | F1 | Show or hide the favourites sidebar (it takes the keyboard) |
 | Ctrl+D | Add the current folder to the favourites |
