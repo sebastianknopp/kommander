@@ -23,13 +23,28 @@ const APP_ID: &str = "io.github.sebastianknopp.Kommander";
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
-    app.connect_startup(|_| load_css());
+    app.connect_startup(|_| {
+        load_css();
+        set_up_icon();
+    });
     app.connect_activate(|app| match app.active_window() {
         Some(window) => window.present(),
         None => window::build(app),
     });
 
     app.run()
+}
+
+/// Makes the app's icon the default for its windows. Installed, the icon
+/// comes from the icon theme (see install.sh); in a debug build run with
+/// `cargo run`, it is also looked up in this repository's data/icons.
+fn set_up_icon() {
+    #[cfg(debug_assertions)]
+    if let Some(display) = gdk::Display::default() {
+        gtk::IconTheme::for_display(&display)
+            .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
+    }
+    gtk::Window::set_default_icon_name(APP_ID);
 }
 
 /// Loads our own stylesheet (embedded in the binary) on top of libadwaita's.

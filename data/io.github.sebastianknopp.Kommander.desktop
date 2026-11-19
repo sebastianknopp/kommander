@@ -2,10 +2,10 @@
 Type=Application
 Name=Kommander
 GenericName=File Manager
-Comment=Browse and manage files in two panels
+Comment=Manage files in two panels side by side
 Exec=kommander
-Icon=system-file-manager
+Icon=io.github.sebastianknopp.Kommander
 Terminal=false
-Categories=GTK;GNOME;System;Core;FileTools;FileManager;
-Keywords=folder;manager;explore;disk;filesystem;commander;
 StartupNotify=true
+Categories=GTK;System;FileTools;FileManager;
+Keywords=folder;files;manager;explorer;copy;move;commander;norton;dual pane;two panels;

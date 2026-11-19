@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="base" x1="0" y1="20" x2="0" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#77767b"/>
+      <stop offset="1" stop-color="#5e5c64"/>
+    </linearGradient>
+    <clipPath id="front">
+      <rect x="12" y="20" width="104" height="88" rx="12"/>
+    </clipPath>
+    <clipPath id="left">
+      <rect x="20" y="32" width="40" height="68" rx="4"/>
+    </clipPath>
+    <clipPath id="right">
+      <rect x="68" y="32" width="40" height="68" rx="4"/>
+    </clipPath>
+  </defs>
+  <!-- The base: a window seen slightly from above, its lower edge showing. -->
+  <rect x="12" y="24" width="104" height="92" rx="12" fill="#3d3846"/>
+  <rect x="12" y="20" width="104" height="88" rx="12" fill="url(#base)"/>
+  <rect x="12" y="20" width="104" height="2" fill="#ffffff" opacity="0.2" clip-path="url(#front)"/>
+  <!-- Left panel, with the highlighted row under the cursor. -->
+  <g clip-path="url(#left)">
+    <rect x="20" y="32" width="40" height="68" fill="#f6f5f4"/>
+    <rect x="20" y="32" width="40" height="8" fill="#deddda"/>
+    <rect x="20" y="52" width="40" height="12" fill="#3584e4"/>
+  </g>
+  <!-- Right panel. -->
+  <g clip-path="url(#right)">
+    <rect x="68" y="32" width="40" height="68" fill="#f6f5f4"/>
+    <rect x="68" y="32" width="40" height="8" fill="#deddda"/>
+  </g>
+  <!-- File names. -->
+  <g fill="#c0bfbc">
+    <rect x="24" y="44" width="24" height="4" rx="2"/>
+    <rect x="24" y="68" width="28" height="4" rx="2"/>
+    <rect x="24" y="80" width="20" height="4" rx="2"/>
+    <rect x="72" y="44" width="28" height="4" rx="2"/>
+    <rect x="72" y="56" width="20" height="4" rx="2"/>
+    <rect x="72" y="68" width="24" height="4" rx="2"/>
+    <rect x="72" y="80" width="16" height="4" rx="2"/>
+  </g>
+  <rect x="24" y="56" width="28" height="4" rx="2" fill="#ffffff"/>
+</svg>

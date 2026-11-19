@@ -1070,7 +1070,7 @@ fn about_dialog() -> adw::AboutDialog {
     // Only here is the app called by its full name, "Der Kommander".
     let dialog = adw::AboutDialog::builder()
         .application_name("Der Kommander")
-        .application_icon("system-file-manager")
+        .application_icon(crate::APP_ID)
         .version(env!("CARGO_PKG_VERSION"))
         .comments("A two-panel file manager in the GNOME Files look")
         .developer_name(DEVELOPER)
