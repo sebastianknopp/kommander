@@ -18,7 +18,7 @@ use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary}
 use crate::menu::{self, Command};
 use crate::panel::{MenuTarget, Panel, entry_file};
 use crate::progress::Operations;
-use crate::settings::{IconSize, Settings};
+use crate::settings::{IconSize, Settings, WindowSize};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
 use crate::start::{self, Target};
@@ -144,6 +144,19 @@ impl State {
     /// check this themselves.
     fn typing_path(&self) -> bool {
         self.panels[self.active.get()].is_typing_path()
+    }
+
+    /// Notes the window's size for the next start: the size it has when not
+    /// maximised (GTK keeps that as the default size, also while
+    /// maximised), so that un-maximising after a restart gives it back.
+    /// Left as it was while the window is fullscreen. (On a tiling desktop
+    /// such as Hyprland the compositor decides the size anyway.)
+    fn remember_size(&self, window: &adw::ApplicationWindow) {
+        if window.is_fullscreen() {
+            return;
+        }
+        let (width, height) = window.default_size();
+        self.settings.borrow_mut().window = WindowSize::checked(width, height, window.is_maximized());
     }
 
     /// Saves the settings, together with each panel's folder and sort order.
@@ -374,11 +387,14 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     toolbar_view.add_bottom_bar(state.operations.strip());
     toolbar_view.add_bottom_bar(&fkeybar::build());
 
+    // The size it had when last closed (see `remember_size`).
+    let size = state.settings.borrow().window;
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Kommander")
-        .default_width(1200)
-        .default_height(760)
+        .default_width(size.width)
+        .default_height(size.height)
+        .maximized(size.maximized)
         .content(&toolbar_view)
         .build();
 
@@ -395,7 +411,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     // Both panels' folders are remembered when the window closes. While
     // copies or moves are running, it first asks whether to stop them.
     let state_weak = Rc::downgrade(&state);
-    window.connect_close_request(move |_| {
+    window.connect_close_request(move |window| {
         let Some(state) = state_weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
@@ -406,6 +422,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             }
             return glib::Propagation::Stop;
         }
+        state.remember_size(window);
         state.save_settings();
         glib::Propagation::Proceed
     });

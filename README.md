@@ -49,7 +49,7 @@ _Screenshot: to be added._
   plain GNOME look). Optionally a slightly see-through window, like GNOME
   Files on Omarchy (Preferences > Translucent Window).
 - Remembers each panel's folder and sorting, the hidden-files choice,
-  whether the sidebar is shown and your preferences.
+  whether the sidebar is shown, the window's size and your preferences.
 
 ## Keyboard
 

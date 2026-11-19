@@ -115,7 +115,9 @@ Module map (`src/`):
   dropping onto it and reordering (rules in `dnd.rs`). Its keys are sorted
   out in `window.rs` (`sidebar_key`).
 - `preferences.rs` — the Preferences dialog.
-- `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file).
+- `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),
+  including the window's un-maximised size and whether it was maximised
+  (saved on close, not while fullscreen).
 - `theme.rs` — colours from the Omarchy theme
   (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
   CSS builder) laid over libadwaita's colour variables, followed live by
