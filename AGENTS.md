@@ -8,7 +8,7 @@ not in tool-specific files.
 
 **Kommander** is a two-panel file manager in the Norton Commander tradition
 with the look of GNOME Files, written in Rust with gtk4-rs and libadwaita,
-for Omarchy (Arch Linux + Hyprland). App ID `io.github.sebastianknopp.Kommander`,
+for Omarchy (Arch Linux + Hyprland). App ID `io.github.sebastianknopp.kommander`,
 binary `kommander`, licence GPL-3.0-or-later. The owner plans to contribute it
 to the Omarchy community. The name nods to Norton Commander and to the German
 film "Superstau" (the About dialog calls it "Der Kommander" and has a small
@@ -45,15 +45,27 @@ Arch packages: `rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib`
   overrides). Test them only with `PREFIX` pointing at a throwaway folder.
 
 Files:
-- `data/io.github.sebastianknopp.Kommander.desktop` — must pass
+- `data/io.github.sebastianknopp.kommander.desktop` — must pass
   `desktop-file-validate`; install.sh writes the absolute binary path into
-  `Exec=`. No `MimeType=` until the app accepts a folder argument.
+  `Exec=` and keeps its `%U`. `MimeType=inode/directory;` offers Kommander
+  as a file manager ("Open With"); install.sh never makes it the default.
+  The app ID used to be `…Kommander` (capital K); install.sh removes files
+  of that old ID in a block marked "remove before public release", and
+  uninstall.sh removes both spellings.
 - `data/icons/hicolor/` — app icon (scalable) and symbolic icon. Debug builds
   add `data/icons` to the icon theme search path, so `cargo run` shows it.
 - `data/style.css` — all CSS, embedded into the binary at compile time.
 
 Module map (`src/`):
-- `main.rs` — app start-up: application ID, CSS, icon.
+- `main.rs` — app start-up: application ID, CSS, icon. Single instance
+  with `HANDLES_OPEN`: a second `kommander` hands its folders to the
+  running one over D-Bus ("open"), or just raises its window ("activate").
+- `start.rs` — folders and files given on the command line: which panel
+  each goes to, file versus folder (tested). `window::build` places them at
+  start-up (the first in the left panel, the second in the right; one that
+  cannot be opened gets a toast and that panel starts in its remembered
+  folder); `window::open` sends the first to the active panel of the open
+  window (the `win.open-argument` action, looked up without blocking).
 - `window.rs` — main window, header bar, menus, all actions and key
   bindings, the shortcuts and About dialogs; wires panels, sidebar,
   preview and jobs.
@@ -157,5 +169,10 @@ drop, when the preview closes, and sometimes when several rows share an
 icon (in the sidebar too: give test bookmarks varied icons), and its
 browser client stops drawing after the sidebar slides out (reconnect).
 The private session has no drives; gvfs's `localtest:///` backend, mounted
-inside it, stands in for one. Test those parts on the real desktop only
+inside it, stands in for one. To test a second `kommander` handing over to
+the running one, both must use the same private session bus: start a
+`dbus-daemon --session --fork --print-address` (or keep `dbus-run-session`
+running) and give both processes its `DBUS_SESSION_BUS_ADDRESS`. Hand over
+while no browser is attached and connect afterwards: Broadway's renderer
+often crashes when the right panel swaps folders without browser input. Test those parts on the real desktop only
 with the owner's consent.
