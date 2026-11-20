@@ -1125,7 +1125,28 @@ impl Panel {
             });
             return;
         }
-        let fresh = Listing::new(&folder);
+        self.read_again(&folder, trip);
+    }
+
+    /// After something was created, renamed, moved or deleted: where the
+    /// shown folder is not watched (a network share tells nobody about
+    /// changes), it is read again in the background and swapped in when
+    /// ready, so the change shows without leaving the folder. Watched
+    /// folders show changes by themselves. Not while on the way elsewhere.
+    pub fn reread_if_unwatched(self: &Rc<Self>) {
+        if self.pending.borrow().is_some() {
+            return;
+        }
+        if let Some(listing) = self.shown().filter(|listing| !listing.is_watched()) {
+            self.read_again(&listing.folder(), self.trip.get());
+        }
+    }
+
+    /// Reads the shown `folder` afresh in the background; `refreshed` swaps
+    /// it in, unless the panel has moved on from `trip` by then. A read
+    /// already under way is replaced.
+    fn read_again(self: &Rc<Self>, folder: &gio::File, trip: u64) {
+        let fresh = Listing::new(folder);
         let weak = Rc::downgrade(self);
         let started = timing().then(Instant::now);
         let handler = fresh.model().connect_loading_notify(move |list| {
@@ -1155,7 +1176,14 @@ impl Panel {
         if fresh.error().is_some() {
             return;
         }
-        let on = self.cursor_entry().map(|info| info.name());
+        // The cursor stays on its file, or goes to the one it is waiting
+        // for (a folder just created, see `put_cursor_on`) if that is here.
+        let awaited = self.pending_cursor.borrow().clone();
+        let awaited = awaited.filter(|name| fresh.has_name(name));
+        if awaited.is_some() {
+            self.pending_cursor.replace(None);
+        }
+        let on = awaited.or_else(|| self.cursor_entry().map(|info| info.name()));
         self.listing.replace(Some(fresh.clone()));
         self.visible.set_model(Some(fresh.model()));
         self.look_up_types(fresh);

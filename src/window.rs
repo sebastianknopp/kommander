@@ -1201,6 +1201,17 @@ fn file_name(file: &gio::File) -> String {
         .unwrap_or_else(|| file.parse_name().into())
 }
 
+impl State {
+    /// After files were created, renamed, moved or deleted: panels whose
+    /// folder is not watched (network shares) read it again, so the change
+    /// shows at once (see `Panel::reread_if_unwatched`).
+    fn reread_unwatched(&self) {
+        for panel in &self.panels {
+            panel.reread_if_unwatched();
+        }
+    }
+}
+
 /// Runs `then` with `panel` if it still shows `folder`.
 fn if_showing(panel: &Panel, folder: &Option<gio::File>, then: impl FnOnce(&Panel)) {
     if let (Some(shown), Some(folder)) = (panel.folder(), folder)
@@ -1234,7 +1245,9 @@ fn new_folder(state: &Rc<State>, panel: &Rc<Panel>) {
     dialogs::new_folder(&parent, existing, move |name| {
         let (state, panel, folder) = (state.clone(), panel.clone(), folder.clone());
         glib::spawn_future_local(async move {
-            match ops::make_folder(&folder, &name).await {
+            let made = ops::make_folder(&folder, &name).await;
+            state.reread_unwatched();
+            match made {
                 Ok(created) => if_showing(&panel, &Some(folder), |panel| {
                     panel.put_cursor_on(created.basename().unwrap_or_default())
                 }),
@@ -1286,6 +1299,7 @@ fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
                 }
             };
             let folder = renamed.parent();
+            state.reread_unwatched();
             if_showing(&panel, &folder, |panel| {
                 panel.put_cursor_on(renamed.basename().unwrap_or_default())
             });
@@ -1299,7 +1313,9 @@ fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
                 let (renamed, old, new, folder) =
                     (renamed.clone(), old.clone(), new.clone(), folder.clone());
                 glib::spawn_future_local(async move {
-                    match ops::rename(&renamed, &old).await {
+                    let back = ops::rename(&renamed, &old).await;
+                    state.reread_unwatched();
+                    match back {
                         Ok(back) => if_showing(&panel, &folder, |panel| {
                             panel.put_cursor_on(back.basename().unwrap_or_default())
                         }),
@@ -1355,6 +1371,7 @@ fn trash_files(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
     let panel = panel.clone();
     glib::spawn_future_local(async move {
         let outcome = ops::trash(&files).await;
+        state.reread_unwatched();
         // Nothing left (all failed, or the location has no trash): marks and
         // cursor stay, for another try or the Delete Permanently dialog.
         if !outcome.trashed.is_empty() {
@@ -1413,6 +1430,7 @@ fn restore(state: Rc<State>, panel: Rc<Panel>, trashed: Vec<ops::Trashed>) {
                 );
             }
         };
+        state.reread_unwatched();
         if let Some(first) = restored.first() {
             if_showing(&panel, &first.parent(), |panel| {
                 panel.put_cursor_on(first.basename().unwrap_or_default())
@@ -1454,6 +1472,7 @@ fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File
                     failed.push((file.clone(), error));
                 }
             }
+            state.reread_unwatched();
             if_showing(&panel, &folder, |panel| {
                 panel.clear_marks();
                 if let Some(name) = neighbour {
@@ -1883,6 +1902,8 @@ impl State {
         } else {
             self.report(transfer_problem(&text, &transfer, summary));
         }
+
+        self.reread_unwatched();
 
         // In the panel the files came from, the marks of the files that were
         // acted on go (others marked meanwhile stay), and if the file under

@@ -160,6 +160,13 @@ impl Listing {
         self.list.error()
     }
 
+    /// Whether the folder has an entry called `name`.
+    pub fn has_name(&self, name: &std::path::Path) -> bool {
+        (0..self.list.n_items())
+            .filter_map(|i| self.list.item(i).and_downcast::<gio::FileInfo>())
+            .any(|info| info.name() == name)
+    }
+
     pub fn is_watched(&self) -> bool {
         self.watched.get()
     }
