@@ -11,7 +11,41 @@ you switch it, and otherwise stays out of your way.
 
 | | |
 | --- | --- |
-| ![The plain GNOME look](docs/screenshots/main-gnome.png) | ![Preview in the other panel](docs/screenshots/preview-image.png) |
+| ![The plain GNOME look, dark](docs/screenshots/main-gnome.png) | ![The plain GNOME look, light](docs/screenshots/main-gnome-light.png) |
+| ![Image preview](docs/screenshots/preview-image.png) | ![Code preview](docs/screenshots/preview-code.png) |
+| ![Right-click menu](docs/screenshots/context-menu.png) | ![Copy to the other panel](docs/screenshots/copy.png) |
+| ![Connect to Server](docs/screenshots/network.png) | |
+
+## Features
+
+- Two panels side by side; Tab switches, the function keys do the work
+- Copy (F5) and move (F6) to the other panel, in the background, with progress and a queue
+- Asks before it replaces a file; skip, replace or keep both
+- Rename (F2), new folder (F7), trash with Undo (F8), delete permanently (Shift+F8)
+- Mark files with Space or Insert, then act on all of them at once
+- Preview in the other panel (F3) that follows the cursor
+- Previews images, text and code with highlighting, PDF, video, sound and folders
+- Favourites sidebar (F1) with the same bookmarks as GNOME Files
+- Drives and USB sticks in the sidebar, with an eject button
+- Drag folders into the favourites to add them, drag to reorder, Ctrl+D adds the current folder
+- Network list of the computers and shares found around you
+- Connect to Server for smb, sftp, ftp and dav addresses; remembers the last eight
+- Right-click menu on files, folders and empty space (also Menu key or Shift+F10)
+- Open With to choose the app; F4 opens your text editor, Shift+F4 a terminal in the folder
+- Cut, copy and paste files (Ctrl+X, C, V), also to and from GNOME Files
+- Drag and drop between the panels and with other apps
+- Copy a file's or folder's path (Ctrl+Shift+C, or double-click the path strip)
+- Type a path to go there (Ctrl+L) with Tab completion; network addresses work too
+- Jump to a file by typing its name
+- Sort by name, size or date; hidden files on or off (Ctrl+H)
+- Full name of a shortened file name in the status line and as a tooltip
+- Slow folders show a spinner and the time waited; Escape goes back
+- Changes show up by themselves; Ctrl+R reloads what others changed on a share
+- Follows the Omarchy theme live as you switch it, or keeps the plain GNOME look
+- Light and dark, and an optional see-through window
+- Errors come with full details and a Copy button; an error log is in the main menu
+- Starts in the folders you give it; runs once and reuses its window
+- Remembers folders, sorting, window size, sidebar and recent servers
 
 ## Install
 
