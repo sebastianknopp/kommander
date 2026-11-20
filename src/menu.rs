@@ -16,6 +16,8 @@ use std::cell::RefCell;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::dialogs::CONNECT_TO_SERVER;
+
 /// What a menu item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -92,6 +94,9 @@ impl Command {
 pub enum On {
     File,
     Folder,
+    /// A computer or share found on the network (see network.rs): it can
+    /// be opened or made a favourite, nothing else.
+    Pointer,
     /// Empty space or the ".." row: the panel's folder itself.
     Background,
 }
@@ -105,6 +110,9 @@ pub struct Context {
     pub count: usize,
     /// The clipboard holds files.
     pub can_paste: bool,
+    /// The panel shows the Network list, where nothing can be created,
+    /// changed, pasted or copied to.
+    pub network: bool,
 }
 
 /// One menu item: its label (with "_" before the mnemonic), the action it
@@ -123,13 +131,43 @@ fn item(label: &'static str, command: Command, accel: Option<&'static str>) -> I
 /// The menu's sections, separated by lines. Items that only make sense for
 /// one file (Open With, Rename, Edit, the folder items) are left out when
 /// several marked files are acted on; ".." and empty space get the
-/// background menu, which acts on no file.
+/// background menu, which acts on no file. In the Network list only
+/// opening, Add to Favourites and Connect to Server are offered (as in
+/// GNOME Files, whose Network view has no file items).
 pub fn sections(context: &Context) -> Vec<Vec<Item>> {
     use Command::*;
     let single = context.count == 1;
     let folder = context.on == On::Folder && single;
     let file = context.on == On::File && single;
+    let show_hidden = || Item {
+        label: "Show _Hidden Files",
+        action: "win.show-hidden".into(),
+        accel: Some("<Control>h"),
+    };
     let mut sections = Vec::new();
+    if context.on == On::Pointer {
+        // Add to Favourites bookmarks the address it points to.
+        sections.push(vec![item("_Open", Open, Some("Return"))]);
+        sections.push(vec![item("Add to _Favourites", AddFavourite, None)]);
+        return sections;
+    }
+    if context.network && context.on == On::Background {
+        sections.push(vec![Item {
+            label: CONNECT_TO_SERVER,
+            action: "win.connect-server".into(),
+            accel: None,
+        }]);
+        sections.push(vec![show_hidden()]);
+        return sections;
+    }
+    if context.network {
+        // Anything else listed there: open it, or bookmark a folder.
+        sections.push(vec![item("_Open", Open, Some("Return"))]);
+        if folder {
+            sections.push(vec![item("Add to _Favourites", AddFavourite, None)]);
+        }
+        return sections;
+    }
     if context.on == On::Background {
         sections.push(vec![
             item("New _Folder…", NewFolder, Some("F7")),
@@ -141,11 +179,7 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
             item("_Paste", Paste, Some("<Control>v")),
             item("Copy Pa_th", CopyPath, None),
         ]);
-        sections.push(vec![Item {
-            label: "Show _Hidden Files",
-            action: "win.show-hidden".into(),
-            accel: Some("<Control>h"),
-        }]);
+        sections.push(vec![show_hidden()]);
         return sections;
     }
 
@@ -295,7 +329,7 @@ mod tests {
 
     #[test]
     fn a_file_row() {
-        let context = Context { on: On::File, count: 1, can_paste: true };
+        let context = Context { on: On::File, count: 1, can_paste: true, network: false };
         assert_eq!(
             labels(context),
             [
@@ -308,7 +342,7 @@ mod tests {
 
     #[test]
     fn a_folder_row() {
-        let context = Context { on: On::Folder, count: 1, can_paste: false };
+        let context = Context { on: On::Folder, count: 1, can_paste: false, network: false };
         assert_eq!(
             labels(context),
             [
@@ -327,7 +361,7 @@ mod tests {
     #[test]
     fn several_marked_files_leave_out_single_file_items() {
         for on in [On::File, On::Folder] {
-            let context = Context { on, count: 3, can_paste: true };
+            let context = Context { on, count: 3, can_paste: true, network: false };
             assert_eq!(
                 labels(context),
                 [
@@ -341,7 +375,7 @@ mod tests {
 
     #[test]
     fn empty_space_and_the_parent_row() {
-        let context = Context { on: On::Background, count: 0, can_paste: true };
+        let context = Context { on: On::Background, count: 0, can_paste: true, network: false };
         assert_eq!(
             labels(context),
             [
@@ -360,9 +394,29 @@ mod tests {
     }
 
     #[test]
+    fn the_network_list_offers_no_file_operations() {
+        // A computer or share: open it or bookmark where it points.
+        for network in [true, false] {
+            let context = Context { on: On::Pointer, count: 1, can_paste: true, network };
+            assert_eq!(labels(context), [vec!["_Open"], vec!["Add to _Favourites"]]);
+        }
+        // Empty space there: Connect to Server instead of New Folder and Paste.
+        let context = Context { on: On::Background, count: 0, can_paste: true, network: true };
+        let actions: Vec<String> =
+            sections(&context).into_iter().flatten().map(|item| item.action).collect();
+        assert_eq!(actions, ["win.connect-server", "win.show-hidden"]);
+        // Anything else listed there can only be opened (or bookmarked).
+        let context = Context { on: On::Folder, count: 1, can_paste: true, network: true };
+        assert_eq!(labels(context), [vec!["_Open"], vec!["Add to _Favourites"]]);
+        let context = Context { on: On::File, count: 2, can_paste: true, network: true };
+        assert_eq!(labels(context), [vec!["_Open"]]);
+    }
+
+    #[test]
     fn mnemonics_are_unique_in_each_menu() {
-        for on in [On::File, On::Folder, On::Background] {
-            let context = Context { on, count: 1, can_paste: true };
+        let all = [On::File, On::Folder, On::Pointer, On::Background];
+        for (on, network) in all.iter().flat_map(|&on| [(on, false), (on, true)]) {
+            let context = Context { on, count: 1, can_paste: true, network };
             let mut letters: Vec<char> = sections(&context)
                 .into_iter()
                 .flatten()
@@ -380,7 +434,7 @@ mod tests {
 
     #[test]
     fn items_show_their_keys() {
-        let context = Context { on: On::File, count: 1, can_paste: true };
+        let context = Context { on: On::File, count: 1, can_paste: true, network: false };
         let all: Vec<Item> = sections(&context).into_iter().flatten().collect();
         let accel = |label: &str| all.iter().find(|item| item.label == label).unwrap().accel;
         assert_eq!(accel("Cu_t"), Some("<Control>x"));

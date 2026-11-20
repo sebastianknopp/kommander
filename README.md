@@ -19,6 +19,15 @@ _Screenshot: to be added._
   entry to open it in the active panel. Ctrl+D adds the current folder;
   drop folders between the favourites to add them, drag a favourite to
   reorder, drop files onto an entry to copy or move them there.
+- Network, as in GNOME Files: "Network" at the bottom of the favourites
+  lists the computers and shares found on your network. Enter (or a
+  double-click) connects, asking for a password if needed, and goes
+  inside; the right-click menu adds one to the favourites. "Connect to
+  Server…" (under the Network list, in the main menu and in its right-click
+  menu) takes an address such as `smb://server/share`, `sftp://user@server/`,
+  `ftp://server/` or `dav://server/` and remembers the last eight you
+  connected to. Finding computers needs two optional packages (see
+  Optional extras); without them the list is empty and says so.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
 - Type or paste a path (Ctrl+L), as in GNOME Files: a folder, a file (the
   cursor lands on it), `~/…`, a path relative to the current folder, or an
@@ -54,7 +63,8 @@ _Screenshot: to be added._
   plain GNOME look). Optionally a slightly see-through window, like GNOME
   Files on Omarchy (Preferences > Translucent Window).
 - Remembers each panel's folder and sorting, the hidden-files choice,
-  whether the sidebar is shown, the window's size and your preferences.
+  whether the sidebar is shown, the window's size, the servers you
+  connected to and your preferences.
 
 ## Keyboard
 
@@ -144,6 +154,11 @@ Sound files are played from local folders only, not from network locations.
   GNOME's previewer: `sudo pacman -S --needed sushi`
 - Shift+F4 starts your terminal through `xdg-terminal-exec`, which Omarchy
   already has.
+- The Network list finds Macs, Linux computers and NAS boxes with
+  `gvfs-dnssd`, and Windows PCs with `gvfs-wsdd`:
+  `sudo pacman -S --needed gvfs-dnssd gvfs-wsdd`, then log out and in once.
+  On Arch these are optional, so the list is empty without them.
+  Connecting to Windows shares (`smb://`) needs `gvfs-smb`.
 
 ## Run
 

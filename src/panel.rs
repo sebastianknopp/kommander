@@ -23,6 +23,7 @@ use crate::dnd::{self, DropCheck, Hover};
 use crate::listings::{self, Listing, Listings, TypeLookup};
 use crate::location::Location;
 use crate::marks::Marks;
+use crate::network::{self, RowKind};
 use crate::ops::transfer::Kind;
 use crate::dialogs::{self, label};
 use crate::pathbar::PathBar;
@@ -42,6 +43,10 @@ pub struct Panel {
     /// The field for typing a path (Ctrl+L), in the breadcrumbs' place.
     location: Rc<Location>,
     status_label: gtk::Label,
+    /// The hint in the empty Network list.
+    empty_hint: gtk::Label,
+    /// The strip with "Connect to Server…" under the Network list.
+    network_bar: gtk::Box,
     search_bar: gtk::Box,
     search_entry: gtk::SearchEntry,
     column_view: gtk::ColumnView,
@@ -127,7 +132,11 @@ impl Panel {
             show_hidden,
             move |item| {
                 let info = item.downcast_ref::<gio::FileInfo>().unwrap();
-                show_hidden.get() || (!info.is_hidden() && !info.is_backup())
+                // Asked for by name: the rows of the Network list may come
+                // without these, and the short getters complain then.
+                show_hidden.get()
+                    || (!info.boolean(gio::FILE_ATTRIBUTE_STANDARD_IS_HIDDEN)
+                        && !info.boolean(gio::FILE_ATTRIBUTE_STANDARD_IS_BACKUP))
             }
         ));
         let visible =
@@ -176,6 +185,34 @@ impl Panel {
             .child(&column_view)
             .build();
 
+        // In the empty Network list, a hint over the list; under the
+        // Network list, a slim strip with "Connect to Server…" (see network.rs).
+        let empty_hint = gtk::Label::builder()
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .max_width_chars(40)
+            .can_target(false)
+            .visible(false)
+            .css_classes(["dimmed", "network-hint"])
+            .build();
+        let list_area = gtk::Overlay::builder().child(&scrolled).vexpand(true).build();
+        list_area.add_overlay(&empty_hint);
+        let connect_button = gtk::Button::builder()
+            .label(dialogs::CONNECT_TO_SERVER)
+            .use_underline(true)
+            .action_name("win.connect-server")
+            .focusable(false)
+            .css_classes(["flat"])
+            .build();
+        let network_bar = gtk::Box::builder()
+            .visible(false)
+            .halign(gtk::Align::Fill)
+            .css_classes(["network-bar"])
+            .build();
+        network_bar.append(&connect_button);
+
         let path_bar = PathBar::new();
         let location = Location::new(path_bar.widget());
 
@@ -201,7 +238,8 @@ impl Panel {
             .css_classes(["panel"])
             .build();
         root.append(location.widget());
-        root.append(&scrolled);
+        root.append(&list_area);
+        root.append(&network_bar);
         root.append(&search_bar);
         root.append(&status_label);
 
@@ -210,6 +248,8 @@ impl Panel {
             path_bar,
             location,
             status_label,
+            empty_hint,
+            network_bar,
             search_bar,
             search_entry,
             column_view,
@@ -370,9 +410,9 @@ impl Panel {
             }
         });
         let root = self.root.downgrade();
-        self.location.connect_report(move |text| {
+        self.location.connect_report(move |problem| {
             if let Some(root) = root.upgrade() {
-                toast(&root, text);
+                report::show(&root, problem);
             }
         });
 
@@ -505,6 +545,7 @@ impl Panel {
     /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked;
     /// "Loading…" while another folder takes its time.
     fn update_status(&self) {
+        self.update_network_parts();
         if self.loading_notice.get() {
             self.status_label.set_label(crate::dialogs::LOADING);
             return;
@@ -519,9 +560,9 @@ impl Panel {
                 continue;
             }
             count += 1;
-            if info.file_type() != gio::FileType::Directory {
+            if !is_dir(&info) {
                 has_files = true;
-                file_bytes += info.size().max(0) as u64;
+                file_bytes += size_of(&info);
             }
         }
         self.status_label.set_label(&status_text(
@@ -529,6 +570,26 @@ impl Panel {
             has_files.then_some(file_bytes),
             any_marked,
         ));
+    }
+
+    /// Whether the panel shows the Network list.
+    pub fn is_network_list(&self) -> bool {
+        self.shown().is_some_and(|listing| network::is_network_list(&listing.folder()))
+    }
+
+    /// Shows the "Connect to Server…" strip while in the Network list, and
+    /// the hint while that list is empty, as GNOME Files does.
+    fn update_network_parts(&self) {
+        let shown = self.shown();
+        let in_network = shown.as_ref().is_some_and(|listing| network::is_network_list(&listing.folder()));
+        self.network_bar.set_visible(in_network);
+        let empty = in_network
+            && shown.is_some_and(|listing| !listing.is_loading())
+            && self.selection.n_items() == 0;
+        if empty && self.empty_hint.label().is_empty() {
+            self.empty_hint.set_label(&network::empty_hint());
+        }
+        self.empty_hint.set_visible(empty);
     }
 
     // --- Marked files ---
@@ -1031,9 +1092,10 @@ impl Panel {
         let Some(file) = entry_file(&info) else {
             return;
         };
-        if info.file_type() == gio::FileType::Directory {
-            self.open(&file, None);
-            return;
+        match network::kind_of(&info) {
+            RowKind::Folder => return self.open(&file, None),
+            RowKind::Pointer(target) => return self.follow(&info, &file, target),
+            RowKind::File => {}
         }
         // Launched directly with the default app, as Nautilus does.
         // (gtk::FileLauncher goes through the desktop portal, which asks
@@ -1107,12 +1169,52 @@ impl Panel {
         });
     }
 
+    /// Opens a computer or share of the Network list (or a share in a
+    /// server's list), `file`, that points to `target`: goes where it
+    /// points, connecting first if need be (a password question may come
+    /// up), as Nautilus does. A mountable without an address is mounted to
+    /// find out where it leads. Meanwhile the status line says so.
+    fn follow(self: &Rc<Self>, info: &gio::FileInfo, file: &gio::File, target: Option<String>) {
+        let address = target.as_deref().map_or_else(|| file.clone(), gio::File::for_uri);
+        let name = info.display_name().to_string();
+        let trip = self.trip.get();
+        let parent = self.root.root().and_downcast::<gtk::Window>();
+        self.status_label.set_label(dialogs::CONNECTING);
+        let weak = Rc::downgrade(self);
+        let pointer = file.clone();
+        glib::spawn_future_local(async move {
+            let result = network::reach(&address, parent.as_ref()).await;
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            panel.update_status();
+            match result {
+                // Unless the panel has gone elsewhere meanwhile.
+                Ok(target) if panel.trip.get() == trip => panel.go_to_target(&target),
+                Ok(_) => {}
+                // A password question cancelled: nothing went wrong.
+                Err(error) if error.matches(gio::IOErrorEnum::FailedHandled) => {}
+                Err(error) => {
+                    let reason = dialogs::reason(&error);
+                    let summary = dialogs::failed(&[name], "open", "opened", &reason);
+                    report::show(
+                        &panel.root,
+                        Problem::new(&summary, dialogs::attempt::FOLLOW_POINTER)
+                            .file(label::FILE, &pointer)
+                            .file(label::LOCATION, &address)
+                            .error(&error),
+                    );
+                }
+            }
+        });
+    }
+
     /// Opens the file under the cursor in the default text editor (F4).
     pub fn edit(&self) {
         let Some(info) = self.cursor_entry() else {
             return;
         };
-        if info.file_type() == gio::FileType::Directory {
+        if is_dir(&info) {
             toast(&self.root, "Folders can’t be edited");
             return;
         }
@@ -1928,8 +2030,16 @@ fn status_text(count: u32, file_bytes: Option<u64>, marked: bool) -> String {
     }
 }
 
+/// Folders, and the computers and shares of the Network list, which lead
+/// to one (see network.rs): sorted first, shown without a size.
 fn is_dir(info: &gio::FileInfo) -> bool {
-    info.file_type() == gio::FileType::Directory
+    network::is_folder_like(info)
+}
+
+/// The size of a file; 0 if the listing has none (rows of the Network
+/// list may come without, and `FileInfo::size` complains then).
+fn size_of(info: &gio::FileInfo) -> u64 {
+    info.attribute_uint64(gio::FILE_ATTRIBUTE_STANDARD_SIZE)
 }
 
 /// Folders before files.
@@ -1966,7 +2076,7 @@ fn with_name_key<T>(info: &gio::FileInfo, f: impl FnOnce(&glib::FilenameCollatio
 
 /// By size, then name. Folders have no meaningful size, so they go by name.
 fn compare_sizes(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
-    let size = |info: &gio::FileInfo| if is_dir(info) { 0 } else { info.size() };
+    let size = |info: &gio::FileInfo| if is_dir(info) { 0 } else { size_of(info) };
     size(a).cmp(&size(b)).then_with(|| compare_names(a, b))
 }
 
@@ -2057,7 +2167,7 @@ fn size_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
             let text = if is_dir(info) {
                 glib::GString::new()
             } else {
-                glib::format_size(info.size() as u64)
+                glib::format_size(size_of(info))
             };
             cell.downcast_ref::<gtk::Label>().unwrap().set_label(&text);
         },
@@ -2074,7 +2184,9 @@ fn modified_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
         || detail_label(0.0),
         |cell, info| {
             let text = info
-                .modification_date_time()
+                .has_attribute(gio::FILE_ATTRIBUTE_TIME_MODIFIED)
+                .then(|| info.modification_date_time())
+                .flatten()
                 .map(|date| format_date(&date))
                 .unwrap_or_default();
             cell.downcast_ref::<gtk::Label>().unwrap().set_label(&text);
@@ -2259,5 +2371,27 @@ mod tests {
             sorted(list(), compare_modified, false),
             ["alpha", "Zeta", "file10", "big", "file2"]
         );
+    }
+
+    #[test]
+    fn computers_found_on_the_network_sort_with_the_folders() {
+        // As GIO lists them: no size, no date, no hidden flag.
+        let pointer = |name: &str, file_type| {
+            let info = gio::FileInfo::new();
+            info.set_name(name);
+            info.set_display_name(name);
+            info.set_file_type(file_type);
+            info.set_attribute_string(gio::FILE_ATTRIBUTE_STANDARD_TARGET_URI, "smb://nas/");
+            info
+        };
+        let list = vec![
+            info("notes", false, 10, 1),
+            pointer("nas", gio::FileType::Shortcut),
+            info("Music", true, 4096, 1),
+            pointer("backup", gio::FileType::Mountable),
+        ];
+        assert_eq!(sorted(list.clone(), compare_names, false), ["backup", "Music", "nas", "notes"]);
+        assert_eq!(sorted(list, compare_sizes, false), ["backup", "Music", "nas", "notes"]);
+        assert_eq!(size_of(&pointer("nas", gio::FileType::Shortcut)), 0);
     }
 }

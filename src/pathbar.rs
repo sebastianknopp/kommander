@@ -84,10 +84,12 @@ fn root_segment(file: gio::File) -> Segment {
                 .next()
                 .map(|first| first.to_uppercase().chain(chars).collect())
                 .unwrap_or_default();
+            // The Network list ("network:///") gets the sidebar's icon.
+            let icon = if scheme == "network" { "network-workgroup-symbolic" } else { "folder-symbolic" };
             Segment {
                 file,
                 label,
-                icon: Some("folder-symbolic"),
+                icon: Some(icon),
             }
         }
         None => Segment {
@@ -378,5 +380,9 @@ mod tests {
         assert_eq!(names, ["sftp://server", "srv", "www"]);
         assert_eq!(segments[0].icon, Some("folder-remote-symbolic"));
         assert_eq!(labels(&gio::File::for_uri("trash:///"), &home), ["Trash"]);
+        let network = super::segments(&gio::File::for_uri("network:///"), &home);
+        assert_eq!(network.len(), 1);
+        assert_eq!(network[0].label, "Network");
+        assert_eq!(network[0].icon, Some("network-workgroup-symbolic"));
     }
 }

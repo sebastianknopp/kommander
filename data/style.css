@@ -109,6 +109,21 @@
   padding: 5px 18px 6px 18px;
 }
 
+/* Under the Network list: the slim strip with "Connect to Server…". */
+.panel .network-bar {
+  padding: 3px 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.panel .network-bar button {
+  font-weight: normal;
+}
+
+/* The hint in the empty Network list. */
+.panel .network-hint {
+  margin: 24px;
+}
+
 /* Function-key bar along the bottom of the window. */
 .fkeybar {
   padding: 4px 6px;

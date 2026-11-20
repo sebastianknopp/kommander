@@ -392,6 +392,47 @@ pub const INTO_ITSELF: &str = "A folder can’t be put inside itself";
 pub const TRASH_DROP_FROM_PANELS_ONLY: &str =
     "Only files shown in a panel can be dropped onto the trash";
 
+// --- Network (see network.rs) ---
+
+/// The Network entry of the favourites sidebar.
+pub const NETWORK: &str = "Network";
+
+/// The menu item, the button under the Network list and the dialog's title.
+pub const CONNECT_TO_SERVER: &str = "Connect to _Server…";
+pub const CONNECT_TITLE: &str = "Connect to Server";
+pub const CONNECT: &str = "_Connect";
+pub const CONNECTING: &str = "Connecting…";
+pub const SERVER_ADDRESS_LABEL: &str = "Server Address";
+pub const SERVER_ADDRESS_PLACEHOLDER: &str = "smb://server/share";
+pub const SERVER_EXAMPLES: &str =
+    "For example smb://server/share, sftp://user@server/, ftp://server/ or dav://server/";
+pub const RECENT_SERVERS: &str = "Recent Servers";
+pub const FORGET_SERVER: &str = "Forget";
+pub const SERVER_ADDRESS_EMPTY: &str = "Type the address of a server";
+/// As GNOME Files asks for it: the protocol first.
+pub const SERVER_ADDRESS_NO_SCHEME: &str =
+    "A server address starts with how to connect, like smb:// or sftp://";
+
+/// The plain toast when files are to be created, changed, copied or moved
+/// in the Network list, which only lists what was found.
+pub const NETWORK_LIST_READ_ONLY: &str =
+    "The Network list only shows what was found; open a computer to work with its files";
+
+/// The hint in the empty Network list. `missing` are the packages of the
+/// discovery add-ons that are not installed (Arch leaves them optional).
+pub fn network_empty(missing: &[&str]) -> String {
+    match missing {
+        [] => "No computers found".into(),
+        [package] => {
+            format!("No computers found. To find more on the network, install the package {package}.")
+        }
+        [rest @ .., last] => format!(
+            "No computers found. To find them on the network, install the packages {} and {last}.",
+            rest.join(", ")
+        ),
+    }
+}
+
 // --- Clipboard and Open With ---
 
 /// The toast when Ctrl+V or Paste finds no files on the clipboard (Nautilus's words).
@@ -510,6 +551,9 @@ pub mod attempt {
     pub const PREVIEW_WINDOW: &str = "Show a file in the separate preview window (Sushi)";
     pub const SAVE_SETTINGS: &str = "Save the settings";
     pub const FOLLOW_THEME: &str = "Follow Omarchy theme changes";
+    pub const CONNECT_SERVER: &str = "Connect to a server (Connect to Server)";
+    pub const TYPED_LOCATION: &str = "Open a location typed into the path field (Ctrl+L)";
+    pub const FOLLOW_POINTER: &str = "Open a computer or share listed on the network";
 
     pub fn new_folder(name: &str) -> String {
         format!("Create the folder “{name}”")
@@ -1177,6 +1221,26 @@ mod tests {
     fn reasons_drop_the_path() {
         assert_eq!(reason_of("Error renaming file /tmp/a: Permission denied"), "Permission denied");
         assert_eq!(reason_of("No longer in the trash"), "No longer in the trash");
+    }
+
+    #[test]
+    fn network_wording() {
+        assert_eq!(network_empty(&[]), "No computers found");
+        assert_eq!(
+            network_empty(&["gvfs-dnssd", "gvfs-wsdd"]),
+            "No computers found. To find them on the network, install the packages gvfs-dnssd and gvfs-wsdd."
+        );
+        assert_eq!(
+            network_empty(&["gvfs-wsdd"]),
+            "No computers found. To find more on the network, install the package gvfs-wsdd."
+        );
+        let address = ["smb://nas/music".to_string()];
+        assert_eq!(
+            failed(&address, "connect to", "connected to", "Connection refused"),
+            "Could not connect to “smb://nas/music”: Connection refused"
+        );
+        assert!(CONNECT_TO_SERVER.ends_with('…'));
+        assert!(NETWORK_LIST_READ_ONLY.contains("Network"));
     }
 
     #[test]
