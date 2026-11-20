@@ -1142,6 +1142,19 @@ impl Panel {
         }
     }
 
+    /// Reload (Ctrl+R): reads the shown folder again in the background and
+    /// swaps it in when ready, cursor and marks staying where they are.
+    /// For what others changed on a network share, which tells nobody.
+    /// Not while on the way elsewhere.
+    pub fn reload(self: &Rc<Self>) {
+        if self.pending.borrow().is_some() {
+            return;
+        }
+        if let Some(listing) = self.shown() {
+            self.read_again(&listing.folder(), self.trip.get());
+        }
+    }
+
     /// Reads the shown `folder` afresh in the background; `refreshed` swaps
     /// it in, unless the panel has moved on from `trip` by then. A read
     /// already under way is replaced.

@@ -35,6 +35,9 @@ _Screenshot: to be added._
   Escape or Backspace goes back. Files there are never opened just to pick
   their icon.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
+- Changes show by themselves in local folders, and on network shares
+  after anything Kommander does there; Ctrl+R reloads the folder for what
+  others changed on a share.
 - Type or paste a path (Ctrl+L), as in GNOME Files: a folder, a file (the
   cursor lands on it), `~/…`, a path relative to the current folder, or an
   address such as `smb://server/share` (connected first if needed). Tab
@@ -85,6 +88,7 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 | Escape or Backspace (while a folder loads) | Go back to the folder you were in |
 | Ctrl+L | Type a path to go to (Enter goes, Escape cancels, Tab completes) |
 | Ctrl+H | Show hidden files |
+| Ctrl+R | Reload the folder (for what others changed on a network share) |
 | F1 | Show or hide the favourites sidebar (it takes the keyboard) |
 | Ctrl+D | Add the current folder to the favourites |
 | Up, Down (in the sidebar) | Move through the favourites |

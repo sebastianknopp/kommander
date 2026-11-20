@@ -144,6 +144,9 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
         action: "win.show-hidden".into(),
         accel: Some("<Control>h"),
     };
+    // Reads the folder again: what others changed on a network share only
+    // shows then (as Reload in GNOME Files).
+    let reload = || Item { label: "_Reload", action: "win.reload".into(), accel: Some("<Control>r") };
     let mut sections = Vec::new();
     if context.on == On::Pointer {
         // Add to Favourites bookmarks the address it points to.
@@ -157,7 +160,7 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
             action: "win.connect-server".into(),
             accel: None,
         }]);
-        sections.push(vec![show_hidden()]);
+        sections.push(vec![reload(), show_hidden()]);
         return sections;
     }
     if context.network {
@@ -179,7 +182,7 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
             item("_Paste", Paste, Some("<Control>v")),
             item("Copy Pa_th", CopyPath, None),
         ]);
-        sections.push(vec![show_hidden()]);
+        sections.push(vec![reload(), show_hidden()]);
         return sections;
     }
 
@@ -381,7 +384,7 @@ mod tests {
             [
                 vec!["New _Folder…", "Open Termi_nal Here"],
                 vec!["_Paste", "Copy Pa_th"],
-                vec!["Show _Hidden Files"],
+                vec!["_Reload", "Show _Hidden Files"],
             ]
         );
         // Nothing there acts on files: no cutting, renaming or deleting.
@@ -389,7 +392,7 @@ mod tests {
             sections(&context).into_iter().flatten().map(|item| item.action).collect();
         assert_eq!(
             actions,
-            ["ctx.new-folder", "ctx.terminal", "ctx.paste", "ctx.copy-path", "win.show-hidden"]
+            ["ctx.new-folder", "ctx.terminal", "ctx.paste", "ctx.copy-path", "win.reload", "win.show-hidden"]
         );
     }
 
@@ -404,7 +407,7 @@ mod tests {
         let context = Context { on: On::Background, count: 0, can_paste: true, network: true };
         let actions: Vec<String> =
             sections(&context).into_iter().flatten().map(|item| item.action).collect();
-        assert_eq!(actions, ["win.connect-server", "win.show-hidden"]);
+        assert_eq!(actions, ["win.connect-server", "win.reload", "win.show-hidden"]);
         // Anything else listed there can only be opened (or bookmarked).
         let context = Context { on: On::Folder, count: 1, can_paste: true, network: true };
         assert_eq!(labels(context), [vec!["_Open"], vec!["Add to _Favourites"]]);

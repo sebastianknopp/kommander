@@ -371,6 +371,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     favourites_item.set_attribute_value("accel", Some(&"F1".to_variant()));
     view_section.append_item(&favourites_item);
     view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
+    view_section.append(Some("_Reload"), Some("win.reload"));
     menu.append_section(None, &view_section);
     let places_section = gio::Menu::new();
     places_section.append(Some(dialogs::CONNECT_TO_SERVER), Some("win.connect-server"));
@@ -1120,7 +1121,22 @@ fn add_window_actions(
         })
         .build();
 
-    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite, connect_server]);
+    // Ctrl+R: the active panel reads its folder again (as in GNOME Files).
+    let state_weak = Rc::downgrade(state);
+    let window_weak = window.downgrade();
+    let reload = gio::ActionEntry::builder("reload")
+        .activate(move |_, _, _| {
+            let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            if state.typing_path() || window.visible_dialog().is_some() {
+                return;
+            }
+            state.panels[state.active.get()].reload();
+        })
+        .build();
+    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite, connect_server, reload]);
+    app.set_accels_for_action("win.reload", &["<Control>r"]);
     add_file_actions(window, state);
     app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
     app.set_accels_for_action("win.add-favourite", &["<Control>d"]);
@@ -2045,6 +2061,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Go back while a slow folder is loading", "Escape BackSpace"));
     panels.add(adw::ShortcutsItem::new("Type a path to go to", "<Control>l"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
+    panels.add(adw::ShortcutsItem::new("Reload the folder", "<Control>r"));
 
     let clipboard = adw::ShortcutsSection::new(Some("Clipboard and Menu"));
     clipboard.add(adw::ShortcutsItem::new("Cut the files", "<Control>x"));
