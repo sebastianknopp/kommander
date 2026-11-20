@@ -16,7 +16,10 @@
 // nothing about its type, which is slow on large folders and network shares.
 // Those few files (".bashrc", a script or picture without an extension) get
 // their real type looked up afterwards, once the folder is on screen (see
-// `Listing::look_up_types`).
+// `Listing::look_up_types`), but only on drives where reading a file's start
+// is cheap: not on network shares, and not on FUSE file systems, which GIO
+// calls local although rclone (Google Drive) or sshfs behind them would
+// download part of each file just for its icon (`reads_file_starts`).
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::VecDeque;
@@ -52,6 +55,14 @@ const MOST_LOOKED_UP: u32 = 300;
 /// How many of those lookups run at the same time.
 const LOOKUPS_AT_ONCE: u32 = 4;
 
+/// File systems on another computer, as GIO names them
+/// ("filesystem::type"), where reading files to learn their type means
+/// fetching them. (FUSE file systems are recognised by name too.)
+const NETWORK_FILE_SYSTEMS: &[&str] = &[
+    "nfs", "nfs4", "cifs", "smb", "smbfs", "smb2", "smb3", "ncpfs", "afs", "coda", "9p", "ceph",
+    "sshfs", "davfs", "glusterfs",
+];
+
 /// The files of one folder.
 pub struct Listing {
     list: gtk::DirectoryList,
@@ -63,6 +74,11 @@ pub struct Listing {
     identity: RefCell<Option<String>>,
     /// How many files have had their real type looked up (`MOST_LOOKED_UP`).
     looked_up: Cell<u32>,
+    /// Whether files here may be read to learn their type; None until the
+    /// folder's file system is known (`reads_file_starts`).
+    reads_types: Cell<Option<bool>>,
+    /// Type lookups asked for before that was known; they start once it is.
+    lookups_waiting: RefCell<Vec<std::rc::Weak<Lookup>>>,
 }
 
 impl Listing {
@@ -78,6 +94,9 @@ impl Listing {
             watched: Cell::new(local),
             identity: RefCell::default(),
             looked_up: Cell::new(0),
+            // Elsewhere than on a local path, files are never read for icons.
+            reads_types: Cell::new((!local).then_some(false)),
+            lookups_waiting: RefCell::default(),
         });
         if local {
             let weak = Rc::downgrade(&listing);
@@ -97,15 +116,26 @@ impl Listing {
                 }
                 // A network share mounted as a local path (gvfs, NFS, SMB)
                 // looks local, but changes made elsewhere are not reported.
-                let remote = folder
-                    .query_filesystem_info_future(
-                        gio::FILE_ATTRIBUTE_FILESYSTEM_REMOTE,
-                        glib::Priority::DEFAULT,
-                    )
-                    .await
-                    .is_ok_and(|info| info.boolean(gio::FILE_ATTRIBUTE_FILESYSTEM_REMOTE));
-                if let (true, Some(listing)) = (remote, weak.upgrade()) {
-                    listing.watched.set(false);
+                // And there, or on a FUSE drive such as rclone's, files are
+                // not read for their icons.
+                let attributes = format!(
+                    "{},{}",
+                    gio::FILE_ATTRIBUTE_FILESYSTEM_REMOTE,
+                    gio::FILE_ATTRIBUTE_FILESYSTEM_TYPE
+                );
+                let file_system =
+                    folder.query_filesystem_info_future(&attributes, glib::Priority::DEFAULT).await.ok();
+                let remote = file_system
+                    .as_ref()
+                    .is_some_and(|info| info.boolean(gio::FILE_ATTRIBUTE_FILESYSTEM_REMOTE));
+                let kind = file_system
+                    .as_ref()
+                    .and_then(|info| info.attribute_string(gio::FILE_ATTRIBUTE_FILESYSTEM_TYPE));
+                if let Some(listing) = weak.upgrade() {
+                    if remote {
+                        listing.watched.set(false);
+                    }
+                    listing.file_system_known(reads_file_starts(remote, kind.as_deref()));
                 }
             });
         }
@@ -161,12 +191,15 @@ impl Listing {
     /// calls `found` with each entry whose icon has changed. The answer is
     /// kept in the entry, so a remembered folder keeps its icons. Only on
     /// local drives: reading files over the network is what made listings
-    /// slow. Stops when the returned lookup is dropped (the panel left).
+    /// slow (see `reads_file_starts`). While the folder's file system is
+    /// not known yet, the lookup starts once it is. Stops when the returned
+    /// lookup is dropped (the panel left).
     pub fn look_up_types(
         self: &Rc<Self>,
         found: impl Fn(&gio::FileInfo) + 'static,
     ) -> Option<TypeLookup> {
-        if !self.folder().is_native() || !self.is_watched() {
+        let reads_types = self.reads_types.get();
+        if reads_types == Some(false) {
             return None;
         }
         let lookup = Rc::new(Lookup {
@@ -175,31 +208,61 @@ impl Listing {
             running: Cell::new(0),
             cancellable: gio::Cancellable::new(),
             found: Box::new(found),
+            handler: RefCell::default(),
         });
-        lookup.add(&self.list, 0, self.list.n_items());
-        let weak = Rc::downgrade(&lookup);
-        let handler = self.list.connect_items_changed(move |list, position, _, added| {
-            if let Some(lookup) = weak.upgrade() {
-                lookup.add(list, position, added);
+        match reads_types {
+            Some(_) => lookup.start(&self.list),
+            None => self.lookups_waiting.borrow_mut().push(Rc::downgrade(&lookup)),
+        }
+        Some(TypeLookup { lookup, model: self.list.clone() })
+    }
+
+    /// The folder's file system is known: `reads` tells whether its files
+    /// may be read for their type. Lookups asked for meanwhile start now,
+    /// unless the panel has left (dropped) them.
+    fn file_system_known(&self, reads: bool) {
+        self.reads_types.set(Some(reads));
+        let waiting = self.lookups_waiting.take();
+        if reads {
+            for lookup in waiting.iter().filter_map(std::rc::Weak::upgrade) {
+                if !lookup.cancellable.is_cancelled() {
+                    lookup.start(&self.list);
+                }
             }
-        });
-        Some(TypeLookup { lookup, model: self.list.clone(), handler: Some(handler) })
+        }
     }
 }
 
+/// Whether files may be read to learn their type, on a file system that
+/// is `remote` (GIO's "filesystem::remote") and of the kind `kind` (GIO's
+/// "filesystem::type"). Not on network file systems, and not on FUSE ones
+/// (rclone, sshfs: GIO calls them local, but each read may be a download).
+/// A local USB drive mounted through FUSE (NTFS, exFAT) is skipped too:
+/// GIO calls it "fuse" just the same; its files only keep the icon their
+/// name gives them.
+fn reads_file_starts(remote: bool, kind: Option<&str>) -> bool {
+    let Some(kind) = kind.map(str::to_ascii_lowercase) else {
+        return !remote;
+    };
+    !remote
+        && kind != "fuse"
+        && !kind.starts_with("fuse.")
+        && !NETWORK_FILE_SYSTEMS.contains(&kind.as_str())
+}
+
 /// The lookup of real types for a panel showing a listing; dropping it
-/// cancels what is still under way, and no late answer reaches the panel.
+/// cancels what is still under way (or not yet started), and no late
+/// answer reaches the panel.
 pub struct TypeLookup {
     lookup: Rc<Lookup>,
     model: gtk::DirectoryList,
-    handler: Option<glib::SignalHandlerId>,
 }
 
 impl Drop for TypeLookup {
     fn drop(&mut self) {
         self.lookup.cancellable.cancel();
         self.lookup.queue.borrow_mut().clear();
-        if let Some(handler) = self.handler.take() {
+        if let Some(handler) = self.lookup.handler.take() {
             self.model.disconnect(handler);
         }
     }
@@ -213,9 +276,23 @@ struct Lookup {
     running: Cell<u32>,
     cancellable: gio::Cancellable,
     found: Box<dyn Fn(&gio::FileInfo)>,
+    /// Hears of files added or changed in the listing, once started.
+    handler: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 impl Lookup {
+    /// Starts looking up the files of `list`, and of those added later.
+    fn start(self: &Rc<Self>, list: &gtk::DirectoryList) {
+        self.add(list, 0, list.n_items());
+        let weak = Rc::downgrade(self);
+        let handler = list.connect_items_changed(move |list, position, _, added| {
+            if let Some(lookup) = weak.upgrade() {
+                lookup.add(list, position, added);
+            }
+        });
+        self.handler.replace(Some(handler));
+    }
+
     /// Queues the entries of `list` from `position` on (`count` of them)
     /// that need their type looked up.
     fn add(self: &Rc<Self>, list: &gtk::DirectoryList, position: u32, count: u32) {
@@ -593,6 +670,21 @@ mod tests {
         assert!(has_known_type(&info));
         assert!(names(icon_for(&info)).iter().any(|name| name == "image-png"));
         assert!(!generic.iter().any(|name| name == "image-png"));
+    }
+
+    #[test]
+    fn files_are_read_for_their_type_only_on_local_drives() {
+        for kind in ["fuse", "fuse.rclone", "fuse.sshfs", "nfs", "nfs4", "cifs", "smb3", "FUSE"] {
+            assert!(!reads_file_starts(false, Some(kind)), "{kind}");
+        }
+        for kind in ["ext4", "btrfs", "xfs", "tmpfs", "vfat"] {
+            assert!(reads_file_starts(false, Some(kind)), "{kind}");
+            // Whatever the kind, a drive GIO calls remote is not read.
+            assert!(!reads_file_starts(true, Some(kind)), "{kind}");
+        }
+        // Not known: read unless remote.
+        assert!(reads_file_starts(false, None));
+        assert!(!reads_file_starts(true, None));
     }
 
     #[test]

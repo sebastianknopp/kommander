@@ -73,13 +73,23 @@ Module map (`src/`):
 - `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
   Going to a folder keeps the old one on screen until the new one is read,
-  then swaps in one step (`travel`, `commit`).
+  then swaps in one step (`travel`, `commit`). A folder not read within
+  300 ms puts the panel into "waiting" (`show_waiting`): the path strip
+  shows the destination and a spinner page replaces the list, the old
+  folder staying underneath; `cancel_travel` (Escape, Backspace) goes back
+  to it. While `is_waiting()`, `window.rs` lets only Escape, Backspace,
+  Tab, F10 and keys handled before it (Ctrl+L, F1, Ctrl+J, accelerators)
+  through (`waiting_key`); the file actions, F4/Shift+F4, Ctrl+D, the
+  right-click menu, drags and drops do nothing there, and F5/F6 into a
+  waiting panel are refused with a toast.
 - `listings.rs` — one folder's listing (read in the background), the
   recently visited folders both panels share (local ones kept up to date by
   GTK, others read again on return), and file icons by name (no file is
   opened to pick an icon). Only files whose name tells nothing (".bashrc",
   scripts or pictures without extension) get their real type looked up
-  afterwards, in the background: local drives only, at most 300 per folder,
+  afterwards, in the background: local drives only (not network or FUSE
+  file systems such as rclone or sshfs, asked of GIO's
+  `filesystem::type`/`filesystem::remote`), at most 300 per folder,
   4 at a time, cancelled when the panel leaves; the answer is kept in the
   listing and just that row's icon changes. Only listings that may hold
   network pointers (`network::lists_pointers`: non-local addresses without

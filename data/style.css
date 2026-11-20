@@ -119,6 +119,12 @@
   font-weight: normal;
 }
 
+/* In the list's place while a slow folder is read: the spinner,
+   "Loading…" and "Esc to go back" (colours from libadwaita's classes). */
+.panel .loading-page {
+  margin: 24px;
+}
+
 /* The hint in the empty Network list. */
 .panel .network-hint {
   margin: 24px;

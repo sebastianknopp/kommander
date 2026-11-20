@@ -493,7 +493,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         panel.connect_path_double_clicked(move || {
             if let Some(state) = state_weak.upgrade() {
                 let panel = &state.panels[index];
-                copy_paths(&state, panel, panel.folder().into_iter().collect());
+                copy_paths(&state, panel, panel.path_folder().into_iter().collect());
             }
         });
     }
@@ -582,6 +582,12 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         // of the panel's keys below may act on the panel's files from there.
         if window_state.sidebar.has_focus() {
             return sidebar_key(&window_state, key, modifiers);
+        }
+
+        // While the panel waits for a slow folder, its files are out of
+        // sight: only the keys that go somewhere else get through.
+        if panel.is_waiting() {
+            return waiting_key(&window_state, key, modifiers);
         }
 
         // Ctrl+A marks all files, Ctrl+Shift+A none. (Caught here because
@@ -791,6 +797,40 @@ fn sidebar_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> gl
     glib::Propagation::Stop
 }
 
+/// A key pressed while the active panel waits for a slow folder (the
+/// spinner shows). Escape and Backspace go back to the folder shown before
+/// (at start-up, with nothing to go back to, Escape keeps waiting and
+/// Backspace goes to the parent folder); Tab goes to the other panel. The
+/// keys reaching here that act on files (Enter, F2, F3, F5–F8, Space,
+/// Insert, Ctrl+A, Ctrl+X/C/V, type-to-search, the Menu key) and the
+/// cursor keys do nothing. Ctrl+L, F1, Ctrl+J and the accelerators (Ctrl+H,
+/// Ctrl+comma and the like) are handled before this, or never come here;
+/// F4, Shift+F4 and Ctrl+D check for themselves.
+fn waiting_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+    use gdk::Key;
+    let panel = &state.panels[state.active.get()];
+    let plain = !modifiers.intersects(any_modifier());
+    match key {
+        Key::Escape if plain => {
+            panel.cancel_travel();
+        }
+        Key::BackSpace if plain => {
+            if !panel.cancel_travel() {
+                panel.open_parent();
+            }
+        }
+        Key::Tab | Key::ISO_Left_Tab | Key::KP_Tab
+            if !modifiers.intersects(any_modifier() & !gdk::ModifierType::SHIFT_MASK) =>
+        {
+            state.activate(1 - state.active.get(), true)
+        }
+        // F10 opens the main menu.
+        Key::F10 if plain => return glib::Propagation::Proceed,
+        _ => {}
+    }
+    glib::Propagation::Stop
+}
+
 /// Connects the favourites sidebar: its entries send the active panel
 /// there, it follows the active panel's folder, files dropped onto it go
 /// the same way as files dropped onto a panel, and panels showing a drive
@@ -979,6 +1019,7 @@ fn add_window_actions(
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
                 && !state.typing_path()
+                && !state.panels[state.active.get()].is_waiting()
             {
                 state.panels[state.active.get()].edit();
             }
@@ -992,6 +1033,7 @@ fn add_window_actions(
             if let Some(state) = state_weak.upgrade()
                 && !state.sidebar.has_focus()
                 && !state.typing_path()
+                && !state.panels[state.active.get()].is_waiting()
             {
                 state.panels[state.active.get()].open_terminal();
             }
@@ -1034,6 +1076,7 @@ fn add_window_actions(
             };
             if window.visible_dialog().is_none()
                 && !state.typing_path()
+                && !state.panels[state.active.get()].is_waiting()
                 && let Some(folder) = state.panels[state.active.get()].folder()
             {
                 state.sidebar.add_folder(&folder);
@@ -1088,7 +1131,8 @@ fn add_window_actions(
 // --- File operations (F2, F5, F6, F7, F8/Delete, Shift+F8/Shift+Delete) ---
 
 /// The file operation actions. They act on the active panel and do nothing
-/// while a dialog is open.
+/// while a dialog is open or the panel waits for a slow folder (its files
+/// are out of sight; the function-key bar's buttons come here too).
 fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
     let entry = |name: &str, run: fn(&Rc<State>, &Rc<Panel>)| {
         let state_weak = Rc::downgrade(state);
@@ -1099,8 +1143,11 @@ fn add_file_actions(window: &adw::ApplicationWindow, state: &Rc<State>) {
                 else {
                     return;
                 };
-                if window.visible_dialog().is_none() && !state.sidebar.has_focus() {
-                    let panel = state.panels[state.active.get()].clone();
+                let panel = state.panels[state.active.get()].clone();
+                if window.visible_dialog().is_none()
+                    && !state.sidebar.has_focus()
+                    && !panel.is_waiting()
+                {
                     panel.close_search();
                     run(&state, &panel);
                 }
@@ -1484,7 +1531,15 @@ fn transfer_to_other_panel(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind, sou
     if sources.is_empty() {
         return;
     }
-    let Some(dest_dir) = state.panels[1 - state.active.get()].folder() else {
+    let other = &state.panels[1 - state.active.get()];
+    // Its folder is not there yet; the one underneath is out of sight.
+    if other.is_waiting() {
+        if let Some(on_its_way) = other.destination() {
+            state.toast(&dialogs::still_loading(&file_name(&on_its_way)));
+        }
+        return;
+    }
+    let Some(dest_dir) = other.folder() else {
         return;
     };
     confirm_transfer(state, Some(panel.clone()), kind, sources, dest_dir);
@@ -1596,6 +1651,9 @@ fn show_menu(state: &Rc<State>, index: usize, target: MenuTarget) {
         return;
     }
     let panel = state.panels[index].clone();
+    if panel.is_waiting() {
+        return;
+    }
     panel.close_search();
     if state.active.get() != index || state.sidebar.has_focus() {
         state.activate(index, true);
@@ -1640,7 +1698,8 @@ fn show_menu(state: &Rc<State>, index: usize, target: MenuTarget) {
 /// way as its key (same questions, operations queue and toasts).
 fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, command: Command) {
     let window = state.panels_box.root().and_downcast::<adw::ApplicationWindow>();
-    if window.is_some_and(|window| window.visible_dialog().is_some()) {
+    // Nor once the panel has started waiting for a slow folder meanwhile.
+    if window.is_some_and(|window| window.visible_dialog().is_some()) || panel.is_waiting() {
         return;
     }
     let files = target.files.clone();
@@ -1962,6 +2021,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
     panels.add(adw::ShortcutsItem::new("Open folder or file", "Return"));
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
+    panels.add(adw::ShortcutsItem::new("Go back while a slow folder is loading", "Escape BackSpace"));
     panels.add(adw::ShortcutsItem::new("Type a path to go to", "<Control>l"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
 

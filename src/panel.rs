@@ -6,6 +6,14 @@
 // (see listings.rs) is read in the background, and only once it is complete
 // does the panel switch to it, all in one step (see `commit`). Until then the
 // panel is still in the old folder, for the eye and for every action.
+//
+// A folder that takes longer than a moment (a slow drive, Google Drive
+// through rclone, a network share) gets a spinner instead, as in GNOME
+// Files: the path strip shows the folder on its way and the list makes room
+// for "Loading…" (the panel is "waiting", see `show_waiting`). The old
+// folder stays underneath, untouched, so Escape or Backspace go back to it
+// at no cost (`cancel_travel`). While waiting, nothing may act on the files
+// out of sight: window.rs lets only the keys through that go somewhere.
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -31,8 +39,9 @@ use crate::report::{self, ErrorText, Problem};
 use crate::settings::{Sort, SortColumn};
 use crate::start::Target;
 
-/// After this long without the new folder ready, the status line says so.
-const LOADING_NOTICE: Duration = Duration::from_millis(300);
+/// After this long without the new folder ready, the panel goes into it
+/// and shows a spinner; folders read faster never show one.
+const SPINNER_AFTER: Duration = Duration::from_millis(300);
 
 /// Marks the FileInfo of the ".." row (see `parent_entry`).
 const PARENT_ENTRY: &str = "kommander::parent-entry";
@@ -52,6 +61,11 @@ pub struct Panel {
     empty_hint: gtk::Label,
     /// The strip with "Connect to Server…" under the Network list.
     network_bar: gtk::Box,
+    /// The file list ("list"), or the spinner while waiting ("loading").
+    list_stack: gtk::Stack,
+    /// "Esc to go back" under the spinner; hidden while there is nothing
+    /// to go back to (the first folder at start-up).
+    go_back_hint: gtk::Label,
     search_bar: gtk::Box,
     search_entry: gtk::SearchEntry,
     column_view: gtk::ColumnView,
@@ -73,8 +87,9 @@ pub struct Panel {
     trip: Cell<u64>,
     /// A fresh read of the shown folder, where watching it is not reliable.
     refresh: RefCell<Option<Waiting>>,
-    /// The status line says "Loading…".
-    loading_notice: Cell<bool>,
+    /// The panel is waiting for a slow folder: it shows the spinner and
+    /// the folder on its way in the path strip (see `show_waiting`).
+    waiting: Cell<bool>,
     /// Called whenever the panel has gone to another folder.
     folder_changed: RefCell<Vec<Rc<dyn Fn()>>>,
     hidden_filter: gtk::CustomFilter,
@@ -204,6 +219,31 @@ impl Panel {
             .build();
         let list_area = gtk::Overlay::builder().child(&scrolled).vexpand(true).build();
         list_area.add_overlay(&empty_hint);
+
+        // In the list's place while a slow folder is read: a spinner, as in
+        // GNOME Files, and how to give up.
+        let spinner = adw::Spinner::builder().width_request(32).height_request(32).build();
+        let loading_label = gtk::Label::builder()
+            .label(dialogs::LOADING)
+            .css_classes(["title-4"])
+            .build();
+        let go_back_hint = gtk::Label::builder()
+            .label(dialogs::ESC_TO_GO_BACK)
+            .css_classes(["dimmed", "caption"])
+            .build();
+        let loading_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(["loading-page"])
+            .build();
+        loading_page.append(&spinner);
+        loading_page.append(&loading_label);
+        loading_page.append(&go_back_hint);
+        let list_stack = gtk::Stack::builder().vexpand(true).build();
+        list_stack.add_named(&list_area, Some("list"));
+        list_stack.add_named(&loading_page, Some("loading"));
         let connect_button = gtk::Button::builder()
             .label(dialogs::CONNECT_TO_SERVER)
             .use_underline(true)
@@ -256,7 +296,7 @@ impl Panel {
             .css_classes(["panel"])
             .build();
         root.append(location.widget());
-        root.append(&list_area);
+        root.append(&list_stack);
         root.append(&network_bar);
         root.append(&search_bar);
         root.append(&status_box);
@@ -270,6 +310,8 @@ impl Panel {
             cursor_name,
             empty_hint,
             network_bar,
+            list_stack,
+            go_back_hint,
             search_bar,
             search_entry,
             column_view,
@@ -281,7 +323,7 @@ impl Panel {
             pending: RefCell::default(),
             trip: Cell::new(0),
             refresh: RefCell::default(),
-            loading_notice: Cell::new(false),
+            waiting: Cell::new(false),
             folder_changed: RefCell::default(),
             hidden_filter,
             show_hidden,
@@ -569,12 +611,12 @@ impl Panel {
     }
 
     /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked;
-    /// "Loading…" while another folder takes its time.
+    /// nothing while waiting for a slow folder (the spinner says it all).
     fn update_status(&self) {
         self.update_network_parts();
         self.update_cursor_name();
-        if self.loading_notice.get() {
-            self.status_label.set_label(crate::dialogs::LOADING);
+        if self.waiting.get() {
+            self.status_label.set_label("");
             return;
         }
         let marks = self.marked.marks.borrow();
@@ -602,7 +644,11 @@ impl Panel {
     /// Puts the whole name of the file under the cursor into the status
     /// line if the list shows it shortened, and empties it otherwise.
     fn update_cursor_name(&self) {
-        let name = self.cursor_entry().map(|info| info.display_name());
+        // While waiting, the cursor is out of sight with the list.
+        let name = self
+            .cursor_entry()
+            .filter(|_| !self.waiting.get())
+            .map(|info| info.display_name());
         let cut = name.filter(|name| self.marked.name_is_cut(name));
         self.cursor_name.set_label(cut.as_deref().unwrap_or_default());
     }
@@ -615,7 +661,8 @@ impl Panel {
     /// Shows the "Connect to Server…" strip while in the Network list, and
     /// the hint while that list is empty, as GNOME Files does.
     fn update_network_parts(&self) {
-        let shown = self.shown();
+        // While waiting, the Network list is out of sight (and maybe left).
+        let shown = self.shown().filter(|_| !self.waiting.get());
         let in_network = shown.as_ref().is_some_and(|listing| network::is_network_list(&listing.folder()));
         self.network_bar.set_visible(in_network);
         let empty = in_network
@@ -884,17 +931,73 @@ impl Panel {
         let waiting = Waiting { listing, handler: Some(handler) };
         self.pending.replace(Some(Pending { waiting, cursor_on, started }));
 
-        // On slow drives and network shares, say why nothing happens yet.
+        // Already waiting for another folder: this one takes its place at
+        // once, so the old list does not flash up in between.
+        if self.waiting.get() {
+            self.show_waiting();
+        }
+        // On slow drives and network shares, after a moment the panel goes
+        // into the folder and shows a spinner, as GNOME Files does.
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(LOADING_NOTICE, move || {
+        glib::timeout_add_local_once(SPINNER_AFTER, move || {
             if let Some(panel) = weak.upgrade()
                 && panel.trip.get() == trip
                 && panel.pending.borrow().is_some()
             {
-                panel.loading_notice.set(true);
-                panel.update_status();
+                panel.show_waiting();
             }
         });
+    }
+
+    /// The folder on its way takes its time: the path strip shows it and
+    /// the spinner takes the list's place. Nothing else changes; the shown
+    /// folder, its cursor and marks stay as they are underneath.
+    fn show_waiting(&self) {
+        let Some(destination) = self.pending_listing() else {
+            return;
+        };
+        if !self.waiting.get() {
+            self.close_search();
+            self.set_drop_highlight(None);
+            self.waiting.set(true);
+            self.list_stack.set_visible_child_name("loading");
+        }
+        self.path_bar.set_location(&destination.folder());
+        self.go_back_hint.set_visible(self.shown().is_some());
+        self.update_status();
+    }
+
+    /// The list takes the spinner's place again.
+    fn stop_waiting(&self) {
+        if self.waiting.replace(false) {
+            self.list_stack.set_visible_child_name("list");
+        }
+    }
+
+    /// Whether the panel is waiting for a slow folder (the spinner shows).
+    /// Then nothing may act on its files: they are out of sight.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.get()
+    }
+
+    /// Escape or Backspace while waiting: gives up the folder on its way
+    /// and shows the folder the panel was in, with its cursor and marks as
+    /// they were. False if there is nothing to go back to (the first folder
+    /// at start-up is still being read); then the panel goes on waiting.
+    pub fn cancel_travel(&self) -> bool {
+        let Some(shown) = self.shown().filter(|_| self.waiting.get()) else {
+            return false;
+        };
+        // A late answer about the folder given up is ignored.
+        self.trip.set(self.trip.get() + 1);
+        self.pending.replace(None);
+        self.stop_waiting();
+        self.path_bar.set_location(&shown.folder());
+        self.update_status();
+        if self.active.get() {
+            self.focus();
+        }
+        true
     }
 
     /// The panel is now in `listing`'s folder: everything that belongs to
@@ -902,7 +1005,8 @@ impl Panel {
     /// an empty or half-read folder.
     fn commit(&self, listing: &Rc<Listing>, cursor_on: Option<PathBuf>, started: Option<Instant>) {
         let folder = listing.folder();
-        self.loading_notice.set(false);
+        // First, so that the list can take the keyboard focus below.
+        self.stop_waiting();
         self.close_search();
         self.pending_cursor.replace(None);
         self.marked.marks.borrow_mut().clear();
@@ -1064,9 +1168,15 @@ impl Panel {
 
     /// Ctrl+L: the breadcrumbs become a field holding the current location.
     pub fn edit_location(&self) {
-        if let Some(folder) = self.folder() {
+        if let Some(folder) = self.path_folder() {
             self.location.open(&folder);
         }
+    }
+
+    /// The folder the path strip shows: the folder shown, or while
+    /// waiting, the folder on its way.
+    pub fn path_folder(&self) -> Option<gio::File> {
+        if self.waiting.get() { self.destination() } else { self.folder() }
     }
 
     pub fn is_typing_path(&self) -> bool {
@@ -1488,6 +1598,10 @@ impl Panel {
 
     /// A drag is about to start at `x`, `y`: what it carries, if anything.
     fn prepare_drag(&self, x: f64, y: f64) -> Option<gdk::ContentProvider> {
+        // The list is out of sight while waiting.
+        if self.waiting.get() {
+            return None;
+        }
         let (position, _) = self.row_at(x, y)?;
         let files = self.files_to_drag(position);
         if files.is_empty() {
@@ -1517,7 +1631,7 @@ impl Panel {
     }
 
     /// Whether the panel takes a drag that comes in: files only, and not
-    /// while a dialog is open.
+    /// while a dialog is open or the panel waits for a slow folder.
     fn accept_drop(&self, drop: &gdk::Drop) -> bool {
         let dialog_open = self
             .root
@@ -1525,6 +1639,7 @@ impl Panel {
             .and_downcast::<adw::ApplicationWindow>()
             .is_some_and(|window| window.visible_dialog().is_some());
         !dialog_open
+            && !self.waiting.get()
             && self.folder().is_some()
             && drop.formats().contains_type(gdk::FileList::static_type())
     }
