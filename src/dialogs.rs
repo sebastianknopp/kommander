@@ -381,8 +381,17 @@ pub const SETTINGS_NOT_SAVED: &str = "Could not save the settings";
 /// In the log, when Omarchy's theme folder can't be watched.
 pub const THEME_NOT_FOLLOWED: &str = "Omarchy theme changes won’t be followed until Kommander restarts";
 
-/// The status line while a folder takes a moment to be read.
+/// The panel while a folder takes a moment to be read (under a spinner).
 pub const LOADING: &str = "Loading…";
+
+/// Under "Loading…": how to give up waiting for the folder.
+pub const ESC_TO_GO_BACK: &str = "Esc to go back";
+
+/// The plain toast when files are to be copied or moved into a panel that
+/// is still waiting for its folder to be read.
+pub fn still_loading(folder: &str) -> String {
+    format!("“{folder}” is still loading")
+}
 
 /// The toast when a folder is dropped onto itself or one of its subfolders.
 pub const INTO_ITSELF: &str = "A folder can’t be put inside itself";
@@ -1251,5 +1260,12 @@ mod tests {
             "Could not open “photo.png” with Image Viewer"
         );
         assert_eq!(NOTHING_TO_PASTE, "There is nothing on the clipboard to paste");
+    }
+
+    #[test]
+    fn loading_wording() {
+        assert_eq!(LOADING, "Loading…");
+        assert_eq!(ESC_TO_GO_BACK, "Esc to go back");
+        assert_eq!(still_loading("Projects"), "“Projects” is still loading");
     }
 }
