@@ -387,6 +387,39 @@ pub const LOADING: &str = "Loading…";
 /// Under "Loading…": how to give up waiting for the folder.
 pub const ESC_TO_GO_BACK: &str = "Esc to go back";
 
+/// Under "Loading…" while a slow folder is read, `seconds` into the wait
+/// with `items` entries read so far: nothing at first (the spinner is
+/// enough), then how long it has been ("12 s", "1 min 5 s"), and how much
+/// has arrived if the folder comes bit by bit ("1,200 items so far · 12 s").
+/// Drives that hand a folder over in one go (Google Drive through rclone)
+/// only ever show the time.
+pub fn loading_progress(seconds: u64, items: u32) -> String {
+    let time = match seconds {
+        0..3 => None,
+        3..60 => Some(format!("{seconds} s")),
+        _ => Some(format!("{} min {} s", seconds / 60, seconds % 60)),
+    };
+    let read = match items {
+        0 => None,
+        1 => Some("1 item so far".to_string()),
+        _ => Some(format!("{} items so far", grouped(items))),
+    };
+    [read, time].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+/// `number` with commas between the thousands ("12,345").
+fn grouped(number: u32) -> String {
+    let digits = number.to_string();
+    let mut text = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
 /// The plain toast when files are to be copied or moved into a panel that
 /// is still waiting for its folder to be read.
 pub fn still_loading(folder: &str) -> String {
@@ -1267,5 +1300,15 @@ mod tests {
         assert_eq!(LOADING, "Loading…");
         assert_eq!(ESC_TO_GO_BACK, "Esc to go back");
         assert_eq!(still_loading("Projects"), "“Projects” is still loading");
+
+        assert_eq!(loading_progress(0, 0), "");
+        assert_eq!(loading_progress(2, 0), "");
+        assert_eq!(loading_progress(3, 0), "3 s");
+        assert_eq!(loading_progress(59, 0), "59 s");
+        assert_eq!(loading_progress(65, 0), "1 min 5 s");
+        assert_eq!(loading_progress(1, 1), "1 item so far");
+        assert_eq!(loading_progress(12, 1200), "1,200 items so far · 12 s");
+        assert_eq!(loading_progress(0, 1234567), "1,234,567 items so far");
+        assert_eq!(loading_progress(0, 999), "999 items so far");
     }
 }

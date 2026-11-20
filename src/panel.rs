@@ -66,6 +66,10 @@ pub struct Panel {
     /// "Esc to go back" under the spinner; hidden while there is nothing
     /// to go back to (the first folder at start-up).
     go_back_hint: gtk::Label,
+    /// Under "Loading…": the time waited and the items read so far.
+    loading_progress: gtk::Label,
+    /// The trip whose wait is being counted (see `count_waiting`).
+    counting: Cell<Option<u64>>,
     search_bar: gtk::Box,
     search_entry: gtk::SearchEntry,
     column_view: gtk::ColumnView,
@@ -240,6 +244,9 @@ impl Panel {
             .build();
         loading_page.append(&spinner);
         loading_page.append(&loading_label);
+        // How long it has been, and what has arrived (see `count_waiting`).
+        let loading_progress = gtk::Label::builder().css_classes(["dimmed", "numeric"]).build();
+        loading_page.append(&loading_progress);
         loading_page.append(&go_back_hint);
         let list_stack = gtk::Stack::builder().vexpand(true).build();
         list_stack.add_named(&list_area, Some("list"));
@@ -312,6 +319,8 @@ impl Panel {
             network_bar,
             list_stack,
             go_back_hint,
+            loading_progress,
+            counting: Cell::new(None),
             search_bar,
             search_entry,
             column_view,
@@ -952,10 +961,11 @@ impl Panel {
     /// The folder on its way takes its time: the path strip shows it and
     /// the spinner takes the list's place. Nothing else changes; the shown
     /// folder, its cursor and marks stay as they are underneath.
-    fn show_waiting(&self) {
+    fn show_waiting(self: &Rc<Self>) {
         let Some(destination) = self.pending_listing() else {
             return;
         };
+        self.count_waiting();
         if !self.waiting.get() {
             self.close_search();
             self.set_drop_highlight(None);
@@ -967,11 +977,41 @@ impl Panel {
         self.update_status();
     }
 
+    /// Counts the wait for the folder on its way under the spinner, once
+    /// a second: the time since the spinner came up for it and the items
+    /// read so far (`dialogs::loading_progress`). A folder that takes the
+    /// first one's place starts afresh. The count ends by itself once the
+    /// panel no longer waits for that folder.
+    fn count_waiting(self: &Rc<Self>) {
+        let trip = self.trip.get();
+        if self.counting.replace(Some(trip)) == Some(trip) {
+            return;
+        }
+        self.loading_progress.set_label("");
+        let since = Instant::now();
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(1, move || {
+            let Some(panel) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !panel.waiting.get() || panel.trip.get() != trip {
+                return glib::ControlFlow::Break;
+            }
+            let items = panel.pending_listing().map_or(0, |listing| listing.model().n_items());
+            panel
+                .loading_progress
+                .set_label(&dialogs::loading_progress(since.elapsed().as_secs(), items));
+            glib::ControlFlow::Continue
+        });
+    }
+
     /// The list takes the spinner's place again.
     fn stop_waiting(&self) {
         if self.waiting.replace(false) {
             self.list_stack.set_visible_child_name("list");
         }
+        self.counting.set(None);
+        self.loading_progress.set_label("");
     }
 
     /// Whether the panel is waiting for a slow folder (the spinner shows).

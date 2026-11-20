@@ -31,7 +31,7 @@ _Screenshot: to be added._
   connected to. Finding computers needs two optional packages (see
   Optional extras); without them the list is empty and says so.
 - Slow folders (Google Drive through rclone, network shares): after a
-  moment the panel goes in and shows a spinner, as GNOME Files does;
+  moment the panel goes in and shows a spinner, as GNOME Files does, with the time waited;
   Escape or Backspace goes back. Files there are never opened just to pick
   their icon.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
