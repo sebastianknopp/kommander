@@ -43,6 +43,11 @@ pub struct Panel {
     /// The field for typing a path (Ctrl+L), in the breadcrumbs' place.
     location: Rc<Location>,
     status_label: gtk::Label,
+    /// The status line: `cursor_name`, then `status_label`.
+    status_box: gtk::Box,
+    /// The whole name of the file under the cursor, shown while the list
+    /// shortens it.
+    cursor_name: gtk::Label,
     /// The hint in the empty Network list.
     empty_hint: gtk::Label,
     /// The strip with "Connect to Server…" under the Network list.
@@ -219,8 +224,21 @@ impl Panel {
         let status_label = gtk::Label::builder()
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["status-line", "dimmed", "caption", "numeric"])
+            .css_classes(["dimmed", "caption", "numeric"])
             .build();
+        // Before it, the whole name of the file under the cursor while the
+        // list shows it shortened (the keyboard's answer to a tooltip, as
+        // Norton Commander's status line). It keeps its place when empty,
+        // so the count sits at the right end and never jumps.
+        let cursor_name = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .css_classes(["caption"])
+            .build();
+        let status_box = gtk::Box::builder().spacing(12).css_classes(["status-line"]).build();
+        status_box.append(&cursor_name);
+        status_box.append(&status_label);
 
         let search_entry = gtk::SearchEntry::builder()
             .hexpand(true)
@@ -241,13 +259,15 @@ impl Panel {
         root.append(&list_area);
         root.append(&network_bar);
         root.append(&search_bar);
-        root.append(&status_label);
+        root.append(&status_box);
 
         let panel = Rc::new(Panel {
             root,
             path_bar,
             location,
             status_label,
+            status_box,
+            cursor_name,
             empty_hint,
             network_bar,
             search_bar,
@@ -409,6 +429,12 @@ impl Panel {
                 }
             }
         });
+        let weak = Rc::downgrade(self);
+        self.selection.connect_selected_item_notify(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.update_cursor_name();
+            }
+        });
         let root = self.root.downgrade();
         self.location.connect_report(move |problem| {
             if let Some(root) = root.upgrade() {
@@ -546,6 +572,7 @@ impl Panel {
     /// "Loading…" while another folder takes its time.
     fn update_status(&self) {
         self.update_network_parts();
+        self.update_cursor_name();
         if self.loading_notice.get() {
             self.status_label.set_label(crate::dialogs::LOADING);
             return;
@@ -570,6 +597,14 @@ impl Panel {
             has_files.then_some(file_bytes),
             any_marked,
         ));
+    }
+
+    /// Puts the whole name of the file under the cursor into the status
+    /// line if the list shows it shortened, and empties it otherwise.
+    fn update_cursor_name(&self) {
+        let name = self.cursor_entry().map(|info| info.display_name());
+        let cut = name.filter(|name| self.marked.name_is_cut(name));
+        self.cursor_name.set_label(cut.as_deref().unwrap_or_default());
     }
 
     /// Whether the panel shows the Network list.
@@ -1608,7 +1643,7 @@ impl Panel {
 
     /// Opens the search field with `first` as its text.
     pub fn start_search(&self, first: char) {
-        self.status_label.set_visible(false);
+        self.status_box.set_visible(false);
         self.search_bar.set_visible(true);
         self.search_entry.grab_focus();
         self.search_entry.set_text(&first.to_string());
@@ -1621,7 +1656,7 @@ impl Panel {
             return;
         }
         self.search_bar.set_visible(false);
-        self.status_label.set_visible(true);
+        self.status_box.set_visible(true);
         self.search_entry.set_text("");
         self.search_entry.remove_css_class("error");
         if self.active.get() {
@@ -1942,6 +1977,21 @@ impl MarkedCells {
         });
     }
 
+    /// Whether the list shows `name` shortened. All name cells are equally
+    /// wide, so any of them tells how much room a name has; none laid out
+    /// yet: not known, taken as no.
+    fn name_is_cut(&self, name: &str) -> bool {
+        let label = self.cells.borrow().iter().filter_map(|cell| cell.upgrade()).find_map(|cell| {
+            let child = cell.child()?;
+            // Only the name cell is a box (icon and name).
+            child.downcast_ref::<gtk::Box>()?.last_child().and_downcast::<gtk::Label>()
+        });
+        label.is_some_and(|label| {
+            let room = label.width();
+            room > 0 && label.create_pango_layout(Some(name)).pixel_size().0 > room
+        })
+    }
+
     /// Shows `info`'s icon again in its row, if the row is on screen (after
     /// its real type was found). Nothing else in the list changes.
     fn show_icon(&self, info: &gio::FileInfo) {
@@ -2140,7 +2190,16 @@ fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::Middle)
                 .hexpand(true)
+                .has_tooltip(true)
                 .build();
+            // Under the mouse, a shortened name shows whole.
+            label.connect_query_tooltip(|label, _, _, _, tooltip| {
+                let cut = label.layout().is_ellipsized();
+                if cut {
+                    tooltip.set_text(Some(&label.text()));
+                }
+                cut
+            });
             let cell = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             cell.append(&icon);
             cell.append(&label);

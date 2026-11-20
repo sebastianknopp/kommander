@@ -73,7 +73,7 @@
  * a small libadwaita-style tag in the accent colours, readable on the tinted
  * active strip and the flat inactive one. Fades in quickly, out slowly. */
 .path-strip .copied-pill {
-  margin-left: 2px;
+  margin-right: 2px;
   padding: 2px 10px;
   border-radius: 999px;
   font-size: smaller;

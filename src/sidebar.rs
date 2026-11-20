@@ -778,6 +778,18 @@ impl Sidebar {
             attributes.insert(faint);
             label.set_attributes(Some(&attributes));
         }
+        // A row without a tooltip of its own (a drive) shows its name
+        // whole under the mouse while it is shortened.
+        if tooltip.is_none() {
+            label.set_has_tooltip(true);
+            label.connect_query_tooltip(|label, _, _, _, tooltip| {
+                let cut = label.layout().is_ellipsized();
+                if cut {
+                    tooltip.set_text(Some(&label.text()));
+                }
+                cut
+            });
+        }
         content.append(&label);
         if let Some(eject) = eject {
             let tip = match eject {

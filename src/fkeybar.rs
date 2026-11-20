@@ -13,7 +13,9 @@
 use gtk::prelude::*;
 
 /// Key, label and action name (in the "win." group) of every button.
-const KEYS: [(&str, &str, &str); 7] = [
+const KEYS: [(&str, &str, &str); 8] = [
+    // Short like "MkDir": the buttons are all as wide as the widest.
+    ("F1", "Favs", "favourites"),
     ("F2", "Rename", "rename"),
     ("F3", "View", "view"),
     ("F4", "Edit", "edit"),

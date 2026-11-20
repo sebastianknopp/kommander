@@ -8,7 +8,7 @@
 //
 // A double-click on the strip (its empty part or the current folder's
 // breadcrumb) asks for the current folder's path to be copied; a small
-// "Copied" pill then flashes at the strip's left, laid over the breadcrumbs
+// "Copied" pill then flashes at the strip's right end, laid over the breadcrumbs
 // so the strip keeps its size. A double-click that starts on an earlier
 // folder's breadcrumb only goes there, as its single click does.
 
@@ -165,7 +165,7 @@ impl PathBar {
         // its fade-in runs) until a copy.
         let pill = gtk::Label::builder()
             .label(crate::dialogs::COPIED)
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .can_target(false)
             .css_classes(["copied-pill"])

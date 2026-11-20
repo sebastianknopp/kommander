@@ -49,7 +49,7 @@ _Screenshot: to be added._
   they are pasted. Pasting asks first, like F5 and F6.
 - Copy the path of files or of the current folder as text (Ctrl+Shift+C,
   the right-click menu, or double-click the path strip on top of a
-  panel); "Copied" flashes in the strip. Network locations are copied as
+  panel); "Copied" flashes at the right end of the strip. Network locations are copied as
   their address (smb://…), several files one per line.
 - Copies and moves run in the background with progress, a queue and a
   cancel button. When a file of the same name already exists, it asks.
