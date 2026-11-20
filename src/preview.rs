@@ -212,7 +212,9 @@ impl Preview {
             .bottom_margin(12)
             .left_margin(18)
             .right_margin(18)
-            .css_classes(["preview-text"])
+            // With "monospace" spelt out: setting the classes replaces the one
+            // `.monospace(true)` adds, and code showed in the ordinary font.
+            .css_classes(["preview-text", "monospace"])
             .build();
         let text_scroll = gtk::ScrolledWindow::builder().child(&text_view).build();
 

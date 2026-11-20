@@ -50,9 +50,6 @@ Files:
   `desktop-file-validate`; install.sh writes the absolute binary path into
   `Exec=` and keeps its `%U`. `MimeType=inode/directory;` offers Kommander
   as a file manager ("Open With"); install.sh never makes it the default.
-  The app ID used to be `…Kommander` (capital K); install.sh removes files
-  of that old ID in a block marked "remove before public release", and
-  uninstall.sh removes both spellings.
 - `data/icons/hicolor/` — app icon (scalable) and symbolic icon. Debug builds
   add `data/icons` to the icon theme search path, so `cargo run` shows it.
 - `data/style.css` — all CSS, embedded into the binary at compile time.

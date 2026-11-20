@@ -1,15 +1,41 @@
 # Kommander
 
-Kommander is a file manager with two panels side by side, in the tradition of
-Norton Commander, with the look of GNOME Files. You browse a folder in each
-panel and copy or move files from one to the other with the function keys.
-It is written for Omarchy (Arch Linux with Hyprland) and works on any desktop
-that runs GTK 4 and libadwaita apps. The name is a nod to Norton Commander
-and to the German comedy film "Superstau".
+A two-panel file manager for Linux, in the tradition of Norton Commander
+with the look of GNOME Files. Made for [Omarchy](https://omarchy.org) (Arch
+Linux with Hyprland); runs on any desktop with GTK 4 and libadwaita.
 
-_Screenshot: to be added._
+![Kommander with the Omarchy theme's colours](docs/screenshots/main-omarchy.png)
 
-## Features
+## Highlights
+
+- **Two panels, keyboard first.** F5 copies and F6 moves to the other
+  panel, F7 makes a folder, F8 deletes, Space marks files.
+- **Preview in the other panel** (F3) that follows the cursor: images,
+  text and code, PDF, video and sound.
+- **Favourites sidebar** (F1) with the bookmarks of GNOME Files, your
+  drives and the network.
+- **Network shares.** Finds the computers on your network; Connect to
+  Server takes smb, sftp, ftp and dav addresses.
+- **Copy and move in the background** with progress, a queue and a
+  question when a file already exists. Trash with Undo.
+- **Right-click menu, clipboard and drag and drop**, also to and from
+  GNOME Files and other apps.
+- **Two looks.** Follows the Omarchy theme live as you switch themes, or
+  stays plain GNOME; light and dark.
+
+Written in Rust with GTK 4 and libadwaita. The name is a nod to Norton
+Commander and to the German comedy film "Superstau".
+
+## Screenshots
+
+| | |
+| --- | --- |
+| ![GNOME look, dark](docs/screenshots/main-gnome.png) GNOME look, dark | ![GNOME look, light](docs/screenshots/main-gnome-light.png) GNOME look, light |
+| ![Image preview](docs/screenshots/preview-image.png) Preview of an image (F3) | ![Code preview](docs/screenshots/preview-code.png) Preview of code (F3) |
+| ![Right-click menu](docs/screenshots/context-menu.png) Right-click menu | ![Copying](docs/screenshots/copy.png) Copying to the other panel (F5) |
+| ![Connect to Server](docs/screenshots/network.png) Connect to Server | |
+
+## All features
 
 - Two panels with breadcrumbs, a ".." row to go up, and sorting by name,
   size or date (click a column header).
@@ -31,8 +57,8 @@ _Screenshot: to be added._
   connected to. Finding computers needs two optional packages (see
   Optional extras); without them the list is empty and says so.
 - Slow folders (Google Drive through rclone, network shares): after a
-  moment the panel goes in and shows a spinner, as GNOME Files does, with the time waited;
-  Escape or Backspace goes back. Files there are never opened just to pick
+  moment the panel goes in and shows a spinner, as GNOME Files does, with
+  the time waited; Escape or Backspace goes back. Files there are never opened just to pick
   their icon.
 - Hidden files on or off (Ctrl+H); jump to a file by typing its name.
 - Changes show by themselves in local folders, and on network shares
@@ -56,8 +82,9 @@ _Screenshot: to be added._
   they are pasted. Pasting asks first, like F5 and F6.
 - Copy the path of files or of the current folder as text (Ctrl+Shift+C,
   the right-click menu, or double-click the path strip on top of a
-  panel); "Copied" flashes at the right end of the strip. Network locations are copied as
-  their address (smb://…), several files one per line.
+  panel); "Copied" flashes at the right end of the strip. Network
+  locations are copied as their address (smb://…), several files one per
+  line.
 - Copies and moves run in the background with progress, a queue and a
   cancel button. When a file of the same name already exists, it asks.
 - Drag and drop between the panels and to and from other apps.
@@ -128,13 +155,15 @@ The same list is in the app under Main Menu > Keyboard Shortcuts (Ctrl+?).
 You need these packages. On Arch / Omarchy:
 
 ```
-sudo pacman -S --needed rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib
+sudo pacman -S --needed git rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib
 ```
 
 (On Arch these packages also contain what is needed to build against them;
-there are no separate "-dev" packages.) Then, in this folder:
+there are no separate "-dev" packages.) Then get the code and install it:
 
 ```
+git clone https://github.com/sebastianknopp/kommander.git
+cd kommander
 ./install.sh
 ```
 

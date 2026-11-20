@@ -4,7 +4,6 @@
 set -euo pipefail
 
 APP_ID=io.github.sebastianknopp.kommander
-OLD_APP_ID=io.github.sebastianknopp.Kommander # remove before public release
 
 if [ -n "${PREFIX:-}" ]; then
     BIN_DIR="$PREFIX/bin"
@@ -21,11 +20,6 @@ FILES=(
     "$APPS_DIR/$APP_ID.desktop"
     "$ICON_DIR/scalable/apps/$APP_ID.svg"
     "$ICON_DIR/symbolic/apps/$APP_ID-symbolic.svg"
-    # The same files under the app ID's old spelling, with a capital K
-    # (remove before public release).
-    "$APPS_DIR/$OLD_APP_ID.desktop"
-    "$ICON_DIR/scalable/apps/$OLD_APP_ID.svg"
-    "$ICON_DIR/symbolic/apps/$OLD_APP_ID-symbolic.svg"
 )
 removed=0
 for file in "${FILES[@]}"; do
