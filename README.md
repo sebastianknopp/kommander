@@ -18,34 +18,26 @@ you switch it, and otherwise stays out of your way.
 
 ## Features
 
-- Two panels side by side; Tab switches, the function keys do the work
-- Copy (F5) and move (F6) to the other panel, in the background, with progress and a queue
-- Asks before it replaces a file; skip, replace or keep both
-- Rename (F2), new folder (F7), trash with Undo (F8), delete permanently (Shift+F8)
-- Mark files with Space or Insert, then act on all of them at once
-- Preview in the other panel (F3) that follows the cursor
-- Previews images, text and code with highlighting, PDF, video, sound and folders
-- Favourites sidebar (F1) with the same bookmarks as GNOME Files
-- Drives and USB sticks in the sidebar, with an eject button
-- Drag folders into the favourites to add them, drag to reorder, Ctrl+D adds the current folder
-- Network list of the computers and shares found around you
-- Connect to Server for smb, sftp, ftp and dav addresses; remembers the last eight
-- Right-click menu on files, folders and empty space (also Menu key or Shift+F10)
-- Open With to choose the app; F4 opens your text editor, Shift+F4 a terminal in the folder
-- Cut, copy and paste files (Ctrl+X, C, V), also to and from GNOME Files
-- Drag and drop between the panels and with other apps
-- Copy a file's or folder's path (Ctrl+Shift+C, or double-click the path strip)
-- Type a path to go there (Ctrl+L) with Tab completion; network addresses work too
-- Jump to a file by typing its name
-- Sort by name, size or date; hidden files on or off (Ctrl+H)
-- Full name of a shortened file name in the status line and as a tooltip
-- Slow folders show a spinner and the time waited; Escape goes back
-- Changes show up by themselves; Ctrl+R reloads what others changed on a share
-- Follows the Omarchy theme live as you switch it, or keeps the plain GNOME look
-- Light and dark, and an optional see-through window
-- Errors come with full details and a Copy button; an error log is in the main menu
-- Starts in the folders you give it; runs once and reuses its window
-- Remembers folders, sorting, window size, sidebar and recent servers
+- **Two panels** side by side; Tab switches, the function keys do the work
+- **Copy (F5) and move (F6)** to the other panel, in the background, with progress and a queue
+- **Asks before replacing** a file: skip, replace or keep both
+- **Rename (F2), new folder (F7), trash (F8)** with Undo, delete for good (Shift+F8)
+- **Mark files** with Space or Insert, then act on all of them at once
+- **Preview (F3)** in the other panel that follows the cursor
+- **Previews** images, highlighted code and text, PDF, video and sound
+- **Favourites sidebar (F1)** with the same bookmarks as GNOME Files
+- **Drives and USB sticks** in the sidebar, with an eject button
+- **Network list** of the computers and shares found around you
+- **Connect to Server** for smb, sftp, ftp and dav; remembers the last eight
+- **Right-click menu** on files, folders and empty space
+- **Open With**, your text editor (F4) and a terminal in the folder (Shift+F4)
+- **Cut, copy and paste** files, also to and from GNOME Files
+- **Drag and drop** between the panels and with other apps
+- **Type a path** (Ctrl+L) with Tab completion, or type a name to jump to it
+- **Copy a path** with Ctrl+Shift+C or a double-click on the path strip
+- **Slow folders** show a spinner and the time waited; Escape goes back
+- **Omarchy theme** followed live as you switch it, or the plain GNOME look
+- **Light and dark**, and an optional see-through window
 
 ## Install
 

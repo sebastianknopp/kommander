@@ -15,8 +15,9 @@ film "Superstau" (the About dialog calls it "Der Kommander" and has a small
 easter egg). The user-facing description, key list and "Not yet" list are in
 the app itself (Keyboard Shortcuts dialog) and a deliberately short,
 opinionated README.md: a pitch in a few sentences, all screenshots, one
-bullet list of every feature (each bullet at most 100 characters, keep it
-in step when features change), install, and an "Extras" section. No key
+bullet list of the 20 most important features (each bullet at most 100
+characters, starting with its subject in bold; a new feature replaces a
+lesser one rather than growing the list), install, and an "Extras" section. No key
 tables or walkthroughs.
 
 ## House rule: which model does what
