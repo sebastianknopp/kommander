@@ -13,9 +13,9 @@ binary `kommander`, licence GPL-3.0-or-later. The owner plans to contribute it
 to the Omarchy community. The name nods to Norton Commander and to the German
 film "Superstau" (the About dialog calls it "Der Kommander" and has a small
 easter egg). The user-facing description, key list and "Not yet" list are in
-README.md; keep it in step when features or keys change, and keep it
-concise: one or two lines per point, no walkthroughs (the app's own
-shortcuts dialog has every key).
+the app itself (Keyboard Shortcuts dialog) and a deliberately short,
+opinionated README.md: a pitch in a few sentences, screenshots, install,
+and an "Extras" section. Do not add feature lists or key tables to it.
 
 ## House rule: which model does what
 
@@ -200,8 +200,7 @@ Module map (`src/`):
   run `cargo fmt` on whole files; format only the lines you change.
 - Keep `cargo build`, `cargo clippy --all-targets` and `cargo test` clean.
 - The shortcuts dialog at the end of `window.rs` lists only keys that work;
-  update it (and README.md's short key table, if a main key) when keys
-  change.
+  update it when keys change.
 
 ### Testing the UI without disturbing the desktop
 
