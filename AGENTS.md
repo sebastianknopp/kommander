@@ -31,7 +31,8 @@ hands routine implementation to Opus subagents.
 
 Arch packages: `rust pkgconf gtk4 libadwaita gtksourceview5 poppler-glib`
 (Arch has no separate -dev packages). Video/audio preview also needs
-`gst-plugins-good gst-libav`; the separate preview window needs `sushi`.
+`gst-plugins-good gst-libav`; the separate preview window needs `sushi`;
+finding computers in the Network list needs `gvfs-dnssd gvfs-wsdd`.
 
 - Build: `cargo build` (release: `cargo build --release`)
 - Run: `cargo run` — opens on the real desktop; see "Testing the UI" below
@@ -80,13 +81,24 @@ Module map (`src/`):
   scripts or pictures without extension) get their real type looked up
   afterwards, in the background: local drives only, at most 300 per folder,
   4 at a time, cancelled when the panel leaves; the answer is kept in the
-  listing and just that row's icon changes.
+  listing and just that row's icon changes. Only listings that may hold
+  network pointers (`network::lists_pointers`: non-local addresses without
+  a path, such as `network:///` or `smb://server/`) also ask GIO for
+  `standard::target-uri` and `standard::icon`; local folders never do.
+- `network.rs` — the Network list (`network:///`) and connecting to
+  servers, as in GNOME Files: what a row is (folder, file, or a pointer =
+  shortcut/mountable with a target address; tested), `reach` (the one async
+  "find out what this is, mounting first and following pointers" used by
+  Ctrl+L, pointer rows and the dialog), the recent-servers list (newest
+  first, no doubles, at most 8; tested), the empty-list hint (names
+  `gvfs-dnssd`/`gvfs-wsdd` when GIO lacks the `dns-sd`/`wsdd` schemes;
+  tested) and the Connect to Server dialog.
 - `pathbar.rs` — the breadcrumbs; a double-click on the strip asks to copy
   the folder's path, and the "Copied" pill that then flashes over it.
 - `location.rs` — typing a path (Ctrl+L): the field that takes the
   breadcrumbs' place (a stack holding both), what typed text means
-  (tested), Tab completion of folder names, mounting a network location
-  first. While it is open, `window.rs`'s key handler hands it every key.
+  (tested), Tab completion of folder names; going there through
+  `network::reach` (mounting a network location first). While it is open, `window.rs`'s key handler hands it every key.
 - `marks.rs` — the set of marked files per panel (by URI).
 - `fkeybar.rs` — the function-key bar at the bottom.
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
@@ -118,13 +130,16 @@ Module map (`src/`):
   to GtkMediaFile without testing an .mp3 with an ID3 tag.
 - `sidebar.rs` — the favourites sidebar (F1): Home, Trash, the GTK
   bookmarks file (`<config dir>/gtk-3.0/bookmarks`, shared with GNOME Files;
-  read, watched and written back) and the drives from GIO's volume monitor;
+  read, watched and written back), the drives from GIO's volume monitor
+  and a fixed Network entry below them (nothing can be dropped onto it);
   dropping onto it and reordering (rules in `dnd.rs`). Its keys are sorted
   out in `window.rs` (`sidebar_key`).
 - `preferences.rs` — the Preferences dialog.
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),
   including the window's un-maximised size and whether it was maximised
-  (saved on close, not while fullscreen).
+  (saved on close, not while fullscreen), and `recent-servers` (saved as
+  soon as it changes; GLib's string-list escaping done by hand, since the
+  Rust binding lacks `set_string_list`).
 - `theme.rs` — colours from the Omarchy theme
   (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
   CSS builder) laid over libadwaita's colour variables, followed live by
@@ -193,7 +208,14 @@ drop, when the preview closes, and sometimes when several rows share an
 icon (in the sidebar too: give test bookmarks varied icons), and its
 browser client stops drawing after the sidebar slides out (reconnect).
 The private session has no drives; gvfs's `localtest:///` backend, mounted
-inside it, stands in for one. To test a second `kommander` handing over to
+inside it, stands in for one. With `gvfs-dnssd`/`gvfs-wsdd` installed,
+opening `network:///` in the private session starts real discovery on the
+owner's network; switch it off by giving the private bus
+`GSETTINGS_BACKEND=keyfile` and a `<config dir>/glib-2.0/settings/keyfile`
+setting `display-local='disabled'` under `[org/gnome/system/dns-sd]` and
+`display-mode='disabled'` under `[org/gnome/system/wsdd]`. `computer:///`
+(its "File System" and drive rows are shortcuts and mountables) stands in
+for the Network list's pointer rows. To test a second `kommander` handing over to
 the running one, both must use the same private session bus: start a
 `dbus-daemon --session --fork --print-address` (or keep `dbus-run-session`
 running) and give both processes its `DBUS_SESSION_BUS_ADDRESS`. Hand over

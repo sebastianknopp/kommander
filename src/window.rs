@@ -24,7 +24,7 @@ use crate::sidebar::Sidebar;
 use crate::start::{self, Target};
 use crate::dialogs::label;
 use crate::report::{self, Problem};
-use crate::{dialogs, fkeybar, openwith, ops, preferences, theme};
+use crate::{dialogs, fkeybar, network, openwith, ops, preferences, theme};
 
 /// Window-wide state: the two panels, which of them is active, and the settings.
 struct State {
@@ -242,6 +242,14 @@ impl State {
     fn go_to_target(&self, index: usize, target: &Target) {
         self.panels[index].go_to_target(target);
     }
+
+    /// Changes the recently used server addresses with `change` and saves
+    /// them right away.
+    fn change_recent_servers(&self, change: impl FnOnce(&[String]) -> Vec<String>) {
+        let mut settings = self.settings.borrow_mut();
+        settings.recent_servers = change(&settings.recent_servers);
+        settings.save();
+    }
 }
 
 /// Builds the window. `files` are the folders (or files) given on the
@@ -364,6 +372,9 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     view_section.append_item(&favourites_item);
     view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
     menu.append_section(None, &view_section);
+    let places_section = gio::Menu::new();
+    places_section.append(Some(dialogs::CONNECT_TO_SERVER), Some("win.connect-server"));
+    menu.append_section(None, &places_section);
     let app_section = gio::Menu::new();
     app_section.append(Some("_Preferences"), Some("app.preferences"));
     app_section.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
@@ -1030,7 +1041,43 @@ fn add_window_actions(
         })
         .build();
 
-    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite]);
+    // Connect to Server… (main menu, the strip under the Network list and
+    // its right-click menu): once connected, the active panel goes there
+    // and the address joins the recent ones.
+    let state_weak = Rc::downgrade(state);
+    let window_weak = window.downgrade();
+    let connect_server = gio::ActionEntry::builder("connect-server")
+        .activate(move |_, _, _| {
+            let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            if window.visible_dialog().is_some() || state.typing_path() {
+                return;
+            }
+            state.panels[state.active.get()].close_search();
+            let recent = state.settings.borrow().recent_servers.clone();
+            let on_connected = Rc::downgrade(&state);
+            let on_forget = Rc::downgrade(&state);
+            network::present_connect(
+                &state.panels_box,
+                &recent,
+                move |address, target| {
+                    if let Some(state) = on_connected.upgrade() {
+                        state.change_recent_servers(|recent| network::remember_server(recent, address));
+                        state.go_to_target(state.active.get(), target);
+                        state.focus_panel();
+                    }
+                },
+                move |address| {
+                    if let Some(state) = on_forget.upgrade() {
+                        state.change_recent_servers(|recent| network::forget_server(recent, address));
+                    }
+                },
+            );
+        })
+        .build();
+
+    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite, connect_server]);
     add_file_actions(window, state);
     app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
     app.set_accels_for_action("win.add-favourite", &["<Control>d"]);
@@ -1116,8 +1163,21 @@ fn if_showing(panel: &Panel, folder: &Option<gio::File>, then: impl FnOnce(&Pane
     }
 }
 
+/// In the Network list nothing can be created, renamed or deleted: says
+/// so with a plain toast (rather than GIO's raw error) and returns true.
+fn refused_in_network(state: &State, panel: &Panel) -> bool {
+    let refused = panel.is_network_list();
+    if refused {
+        state.toast(dialogs::NETWORK_LIST_READ_ONLY);
+    }
+    refused
+}
+
 /// F7: asks for a name and creates that folder in the active panel.
 fn new_folder(state: &Rc<State>, panel: &Rc<Panel>) {
+    if refused_in_network(state, panel) {
+        return;
+    }
     let Some(folder) = panel.folder() else {
         return;
     };
@@ -1146,6 +1206,9 @@ fn new_folder(state: &Rc<State>, panel: &Rc<Panel>) {
 
 /// F2: renames the file under the cursor (never the marked files).
 fn rename(state: &Rc<State>, panel: &Rc<Panel>) {
+    if refused_in_network(state, panel) {
+        return;
+    }
     let Some(info) = panel.cursor_entry() else {
         return;
     };
@@ -1219,7 +1282,7 @@ fn move_to_trash(state: &Rc<State>, panel: &Rc<Panel>) {
 
 /// Asks, then moves `files`, shown in `panel`, to the trash (see above).
 fn ask_to_trash(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
-    if files.is_empty() {
+    if files.is_empty() || refused_in_network(state, panel) {
         return;
     }
     let state = state.clone();
@@ -1326,7 +1389,7 @@ fn restore(state: Rc<State>, panel: Rc<Panel>, trashed: Vec<ops::Trashed>) {
 /// Shift+F8, Shift+Delete (and trash-less locations): deletes `files` for
 /// good, folders with their contents, after asking. There is no undo.
 fn delete_permanently(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>, no_trash: bool) {
-    if files.is_empty() {
+    if files.is_empty() || refused_in_network(state, panel) {
         return;
     }
     let names: Vec<String> = files.iter().map(file_name).collect();
@@ -1488,6 +1551,13 @@ fn confirm_transfer_then(
     dest_dir: gio::File,
     then: impl Fn() + 'static,
 ) {
+    // Nothing goes into the Network list, and what it lists are no files
+    // to copy (F5, F6, drops and Paste all come here).
+    let from_network =
+        sources.iter().any(|file| file.parent().is_some_and(|parent| network::is_network_list(&parent)));
+    if network::is_network_list(&dest_dir) || from_network {
+        return state.toast(dialogs::NETWORK_LIST_READ_ONLY);
+    }
     let names: Vec<String> = sources.iter().map(file_name).collect();
     let dest_name = file_name(&dest_dir);
     let location = dest_dir.parse_name();
@@ -1530,15 +1600,17 @@ fn show_menu(state: &Rc<State>, index: usize, target: MenuTarget) {
     if state.active.get() != index || state.sidebar.has_focus() {
         state.activate(index, true);
     }
-    let on = match &target.entry {
+    let on = match target.entry.as_ref().map(network::kind_of) {
         None => menu::On::Background,
-        Some(info) if info.file_type() == gio::FileType::Directory => menu::On::Folder,
-        Some(_) => menu::On::File,
+        Some(network::RowKind::Folder) => menu::On::Folder,
+        Some(network::RowKind::Pointer(_)) => menu::On::Pointer,
+        Some(network::RowKind::File) => menu::On::File,
     };
     let context = menu::Context {
         on,
         count: target.files.len(),
         can_paste: state.clipboard.has_files(),
+        network: panel.is_network_list(),
     };
     let at = target.at;
     let state_weak = Rc::downgrade(state);
@@ -1613,11 +1685,17 @@ fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, comman
         Command::MoveToOther => transfer_to_other_panel(state, panel, Kind::Move, files),
         Command::Trash => ask_to_trash(state, panel, files),
         Command::Delete => delete_permanently(state, panel, files, false),
-        Command::AddFavourite => {
-            if let Some(folder) = clicked {
-                state.sidebar.add_folder(&folder);
+        // A computer or share: the address it points to, as in GNOME Files.
+        Command::AddFavourite => match target.entry.as_ref().map(network::kind_of) {
+            Some(network::RowKind::Pointer(Some(address))) => {
+                state.sidebar.add_folder(&gio::File::for_uri(&address))
             }
-        }
+            _ => {
+                if let Some(folder) = clicked {
+                    state.sidebar.add_folder(&folder);
+                }
+            }
+        },
         Command::NewFolder => new_folder(state, panel),
     }
 }

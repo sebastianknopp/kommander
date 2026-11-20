@@ -17,6 +17,9 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::dialogs::{self, label};
+use crate::network;
+use crate::report::Problem;
 use crate::start::{self, Target};
 
 /// What the field shows for `folder`: the plain path for a local folder,
@@ -38,7 +41,7 @@ pub fn clean(text: &str) -> &str {
 }
 
 /// Whether `text` starts with an address scheme ("smb://", "trash:///").
-fn has_scheme(text: &str) -> bool {
+pub fn has_scheme(text: &str) -> bool {
     let Some((scheme, rest)) = text.split_once(':') else {
         return false;
     };
@@ -112,7 +115,7 @@ pub fn complete<'a>(typed: &str, names: impl IntoIterator<Item = &'a str>) -> Op
 }
 
 type DoneHandler = Rc<dyn Fn(Option<&Target>)>;
-type ReportHandler = Rc<dyn Fn(&str)>;
+type ReportHandler = Rc<dyn Fn(Problem)>;
 
 pub struct Location {
     stack: gtk::Stack,
@@ -126,7 +129,7 @@ pub struct Location {
     setting_text: Cell<bool>,
     /// Called when the field closes by Enter (with where to go) or Escape.
     on_done: RefCell<Option<DoneHandler>>,
-    /// Shows a short message (why a location can't be opened).
+    /// Reports why a location can't be opened (see report.rs).
     on_report: RefCell<Option<ReportHandler>>,
 }
 
@@ -175,7 +178,7 @@ impl Location {
         self.on_done.replace(Some(Rc::new(f)));
     }
 
-    pub fn connect_report(&self, f: impl Fn(&str) + 'static) {
+    pub fn connect_report(&self, f: impl Fn(Problem) + 'static) {
         self.on_report.replace(Some(Rc::new(f)));
     }
 
@@ -298,18 +301,21 @@ impl Location {
         }
     }
 
-    fn report(&self, text: &str) {
+    fn report(&self, problem: Problem) {
         let on_report = self.on_report.borrow().clone();
         if let Some(f) = on_report {
-            f(text);
+            f(problem);
         }
     }
 
     /// Enter: looks the typed location up in the background. Found, the
     /// field closes and the panel goes there (a file: to its folder, cursor
     /// on it). A network location that is not connected yet is connected
-    /// first (asking for a password if need be), as from the sidebar.
-    /// Not found, the field stays open, marked, and a message says why.
+    /// first (asking for a password if need be), as from the sidebar; a
+    /// computer or share listed on the network is followed to where it
+    /// points (see `network::reach`). Not found, the field stays open,
+    /// marked, and a message says why (none if a password question was
+    /// cancelled).
     fn go(self: &Rc<Self>) {
         let Some(current) = self.folder.borrow().clone() else {
             return;
@@ -322,19 +328,7 @@ impl Location {
         let weak = Rc::downgrade(self);
         let parent = self.entry.root().and_downcast::<gtk::Window>();
         glib::spawn_future_local(async move {
-            let mut result = start::resolve_async(&file).await;
-            if let Err(error) = &result
-                && error.matches(gio::IOErrorEnum::NotMounted)
-            {
-                let operation = gtk::MountOperation::new(parent.as_ref());
-                result = match file
-                    .mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation))
-                    .await
-                {
-                    Ok(()) => start::resolve_async(&file).await,
-                    Err(error) => Err(error),
-                };
-            }
+            let result = network::reach(&file, parent.as_ref()).await;
             let Some(location) = weak.upgrade() else {
                 return;
             };
@@ -347,16 +341,22 @@ impl Location {
                     location.close();
                     location.done(Some(&target));
                 }
+                Err(error) if error.matches(gio::IOErrorEnum::FailedHandled) => {}
                 Err(error) => {
                     if location.is_open() {
                         location.entry.add_css_class("error");
                     }
-                    location.report(&crate::dialogs::failed(
+                    let summary = dialogs::failed(
                         &[start::display_name(&file)],
                         "open",
                         "opened",
-                        &crate::dialogs::reason(&error),
-                    ));
+                        &dialogs::reason(&error),
+                    );
+                    location.report(
+                        Problem::new(&summary, dialogs::attempt::TYPED_LOCATION)
+                            .file(label::LOCATION, &file)
+                            .error(&error),
+                    );
                 }
             }
         });

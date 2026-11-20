@@ -1,6 +1,7 @@
 // The favourites sidebar on the left of the window (F1), in the style of
 // GNOME Files' sidebar: Home and Trash, the user's bookmarks (shared with
-// GNOME Files and the GTK file chooser) and the drives. Clicking an entry
+// GNOME Files and the GTK file chooser), the drives and Network (what was
+// found on the network, see network.rs). Clicking an entry
 // (or Enter) sends the active panel there; the keys while the sidebar has
 // the focus are sorted out in window.rs.
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -21,6 +22,7 @@ use gtk::{gdk, gio, glib};
 
 use crate::dialogs::{self, label};
 use crate::dnd::{self, DropCheck, SidebarDrop, SidebarRow};
+use crate::network;
 use crate::ops::transfer::Kind;
 use crate::panel;
 use crate::report::{self, ErrorText, Problem};
@@ -651,9 +653,12 @@ impl Sidebar {
         let mut entries = Vec::new();
         let home = gio::File::for_path(glib::home_dir());
         let mut add = |place, name: String, icon: gio::Icon, target: Target, eject: Option<Eject>| {
+            // The address as a tooltip ("network:///" says nothing).
             let tooltip = match &target {
-                Target::Folder(folder) => Some(folder.parse_name().to_string()),
-                Target::Volume(_) => None,
+                Target::Folder(folder) if !network::is_network_list(folder) => {
+                    Some(folder.parse_name().to_string())
+                }
+                _ => None,
             };
             let row = self.make_row(&name, &icon, tooltip.as_deref(), eject);
             let favourite = match place {
@@ -681,10 +686,21 @@ impl Sidebar {
             let icon = themed(bookmark_icon(&folder));
             add(SidebarRow::Favourite(index), bookmark_name(uri, label), icon, Target::Folder(folder), None);
         }
-        for (index, drive) in drives(&self.volumes).into_iter().enumerate() {
+        let drives = drives(&self.volumes);
+        let no_drives = drives.is_empty();
+        for (index, drive) in drives.into_iter().enumerate() {
             let place = if index == 0 { SidebarRow::FirstDrive } else { SidebarRow::Drive };
             add(place, drive.name, drive.icon, drive.target, drive.eject);
         }
+        // Below the drives, as in Nautilus: what was found on the network
+        // (see network.rs). It starts the section if there are no drives.
+        add(
+            if no_drives { SidebarRow::FirstDrive } else { SidebarRow::Drive },
+            dialogs::NETWORK.into(),
+            themed("network-workgroup-symbolic"),
+            Target::Folder(network::network_folder()),
+            None,
+        );
 
         let section = |place: SidebarRow| match place {
             SidebarRow::Fixed | SidebarRow::LastFixed => "places",
@@ -1264,6 +1280,10 @@ impl Sidebar {
                 let Target::Folder(dest) = target else {
                     return Err(false);
                 };
+                // Nor onto Network: it only lists what was found.
+                if network::is_network_list(&dest) {
+                    return Err(false);
+                }
                 match dnd::check_drop(&files, &dest) {
                     DropCheck::Go => {}
                     DropCheck::AlreadyThere => return Err(false),

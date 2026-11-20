@@ -10,6 +10,7 @@ mod listings;
 mod location;
 mod marks;
 mod menu;
+mod network;
 mod openwith;
 mod ops;
 mod panel;

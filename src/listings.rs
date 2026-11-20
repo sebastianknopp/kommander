@@ -30,6 +30,14 @@ use gtk::{gio, glib};
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
 standard::fast-content-type,standard::size,standard::is-hidden,standard::is-backup,time::modified";
 
+/// `ATTRIBUTES` plus where a row points and its icon, for the folders
+/// whose rows may be computers or shares found on the network (see
+/// `network::lists_pointers`). Only there: "standard::icon" would make GIO
+/// open files elsewhere.
+const POINTER_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
+standard::fast-content-type,standard::size,standard::is-hidden,standard::is-backup,time::modified,\
+standard::target-uri,standard::icon";
+
 /// How many folders are remembered.
 const REMEMBERED: usize = 16;
 
@@ -60,7 +68,9 @@ pub struct Listing {
 impl Listing {
     /// Starts reading `folder` in the background.
     pub fn new(folder: &gio::File) -> Rc<Self> {
-        let list = gtk::DirectoryList::new(Some(ATTRIBUTES), Some(folder));
+        let attributes =
+            if crate::network::lists_pointers(folder) { POINTER_ATTRIBUTES } else { ATTRIBUTES };
+        let list = gtk::DirectoryList::new(Some(attributes), Some(folder));
         let local = folder.is_native();
         let listing =
             Rc::new(Listing {
@@ -490,6 +500,17 @@ fn special_folder_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_pointer_listings_ask_for_icons() {
+        assert!(!ATTRIBUTES.contains("standard::icon"));
+        assert!(!ATTRIBUTES.contains("target-uri"));
+        // The same attributes, plus the two.
+        assert_eq!(
+            POINTER_ATTRIBUTES,
+            format!("{ATTRIBUTES},standard::target-uri,standard::icon")
+        );
+    }
 
     #[test]
     fn recent_drops_the_least_recently_used() {

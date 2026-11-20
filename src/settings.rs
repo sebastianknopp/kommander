@@ -149,6 +149,9 @@ pub struct Settings {
     /// The window's backgrounds are slightly see-through.
     pub translucent: bool,
     pub window: WindowSize,
+    /// Server addresses recently connected to with Connect to Server,
+    /// newest first (see network.rs).
+    pub recent_servers: Vec<String>,
 }
 
 impl Settings {
@@ -217,6 +220,12 @@ impl Settings {
                 integer("window-height").unwrap_or(0),
                 boolean("window-maximized").unwrap_or(false),
             ),
+            recent_servers: file
+                .string_list(GROUP, "recent-servers")
+                .map(|list| {
+                    list.iter().map(|uri| uri.to_gstr().to_string()).filter(|uri| !uri.is_empty()).collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -231,6 +240,9 @@ impl Settings {
         file.set_integer(GROUP, "window-width", self.window.width);
         file.set_integer(GROUP, "window-height", self.window.height);
         file.set_boolean(GROUP, "window-maximized", self.window.maximized);
+        if !self.recent_servers.is_empty() {
+            file.set_value(GROUP, "recent-servers", &string_list_value(&self.recent_servers));
+        }
         for (i, panel) in PANEL_KEYS.iter().enumerate() {
             let sort = self.sort[i];
             file.set_string(GROUP, &format!("{panel}-sort"), sort.column.as_str());
@@ -241,6 +253,28 @@ impl Settings {
         }
         file
     }
+}
+
+/// `items` as a key file list value ("a;b;"), escaped as GLib's own
+/// g_key_file_set_string_list does (its Rust binding is missing), so that
+/// `KeyFile::string_list` reads them back unchanged.
+fn string_list_value(items: &[String]) -> String {
+    let mut value = String::new();
+    for item in items {
+        for (i, c) in item.chars().enumerate() {
+            match c {
+                ' ' if i == 0 => value.push_str("\\s"),
+                '\\' => value.push_str("\\\\"),
+                ';' => value.push_str("\\;"),
+                '\n' => value.push_str("\\n"),
+                '\t' => value.push_str("\\t"),
+                '\r' => value.push_str("\\r"),
+                c => value.push(c),
+            }
+        }
+        value.push(';');
+    }
+    value
 }
 
 fn path() -> PathBuf {
@@ -272,6 +306,14 @@ mod tests {
             colours: Colours::Gnome,
             translucent: true,
             window: WindowSize { width: 1600, height: 900, maximized: true },
+            // A ";" (the list separator), "\", spaces and accents must survive too.
+            recent_servers: vec![
+                "smb://nas/music".into(),
+                "sftp://user@pi/home/a;b c".into(),
+                r"smb://nas/a\b".into(),
+                " ftp://ö/".into(),
+                "dav://server/".into(),
+            ],
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
