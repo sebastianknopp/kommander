@@ -17,8 +17,10 @@ _Screenshot: to be added._
   (the same ones GNOME Files and the file chooser show) and your drives,
   USB sticks and connected network shares, with an eject button. Click an
   entry to open it in the active panel. Ctrl+D adds the current folder;
-  drop folders between the favourites to add them, drag a favourite to
-  reorder, drop files onto an entry to copy or move them there.
+  drop folders between the favourites or below them to add them, drag a
+  favourite to reorder, drop files onto an entry to copy or move them
+  there. A favourite on another computer says which, fainter, after its
+  name ("films @ nas").
 - Network, as in GNOME Files: "Network" at the bottom of the favourites
   lists the computers and shares found on your network. Enter (or a
   double-click) connects, asking for a password if needed, and goes

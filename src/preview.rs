@@ -160,13 +160,36 @@ pub struct Preview {
 
 impl Preview {
     pub fn new() -> Rc<Self> {
-        // Top strip with the file's name, in the place and style of a
-        // panel's path strip, so the two sides line up.
+        // Top strip in the place and style of a panel's path strip, so the
+        // two sides line up and read alike: an eye, "Preview" and a "/"
+        // dimmed like earlier folders, then the file's name like the
+        // current folder. Spaced as the breadcrumb buttons are.
         let title = gtk::Label::builder()
             .xalign(0.0)
+            .hexpand(true)
+            .margin_start(6)
+            .margin_end(6)
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .build();
+        let heading = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        let eye = gtk::Image::from_icon_name("view-reveal-symbolic");
+        eye.add_css_class("dimmed");
+        heading.append(&eye);
+        heading.append(&gtk::Label::builder().label("Preview").css_classes(["dimmed"]).build());
+        let title_strip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .css_classes(["path-strip", "preview-title"])
             .build();
+        title_strip.append(&heading);
+        title_strip.append(
+            &gtk::Label::builder().label("/").css_classes(["path-separator", "dimmed"]).build(),
+        );
+        title_strip.append(&title);
 
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::ScaleDown)
@@ -274,7 +297,7 @@ impl Preview {
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["panel", "preview"])
             .build();
-        root.append(&title);
+        root.append(&title_strip);
         root.append(&stack);
         root.append(&status);
 

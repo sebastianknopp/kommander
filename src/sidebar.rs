@@ -128,8 +128,31 @@ pub fn bookmark_name(uri: &str, label: Option<&str>) -> String {
     }
     match file.basename() {
         Some(name) if name != Path::new("/") => name.to_string_lossy().into_owned(),
-        _ => file.parse_name().into(),
+        // The top of a network location has no folder name of its own:
+        // a share is called by its name ("smb://nas/films/" is "films"),
+        // a server by its address ("sftp://nas/" is "nas"), not by the
+        // whole address.
+        _ => root_name(uri).unwrap_or_else(|| file.parse_name().into()),
     }
+}
+
+/// The computer a favourite is on, shown fainter after its name
+/// ("films @ nas"): none for local folders, nor when the name says it
+/// already. The ".local" that computers found on the network carry is
+/// left off, as is the port.
+pub fn bookmark_host(uri: &str, name: &str) -> Option<String> {
+    let uri = glib::Uri::parse(uri, glib::UriFlags::NONE).ok()?;
+    let host = uri.host()?;
+    let host = host.strip_suffix(".local").unwrap_or(&host);
+    (!host.is_empty() && host != name && host != name.strip_suffix(".local").unwrap_or(name))
+        .then(|| host.to_string())
+}
+
+/// The short name of the top of a network location (see `bookmark_name`).
+fn root_name(uri: &str) -> Option<String> {
+    let uri = glib::Uri::parse(uri, glib::UriFlags::NONE).ok()?;
+    let share = uri.path().split('/').rfind(|part| !part.is_empty()).map(String::from);
+    share.or_else(|| uri.host().map(|host| host.to_string())).filter(|name| !name.is_empty())
 }
 
 /// The symbolic icon of a favourite, as in Nautilus: the special folders'
@@ -660,11 +683,15 @@ impl Sidebar {
                 }
                 _ => None,
             };
-            let row = self.make_row(&name, &icon, tooltip.as_deref(), eject);
             let favourite = match place {
                 SidebarRow::Favourite(index) => Some(index),
                 _ => None,
             };
+            let host = match (&target, favourite) {
+                (Target::Folder(folder), Some(_)) => bookmark_host(&folder.uri(), &name),
+                _ => None,
+            };
+            let row = self.make_row(&name, host.as_deref(), &icon, tooltip.as_deref(), eject);
             if let Some(index) = favourite {
                 self.make_favourite_row(&row, index);
             }
@@ -728,20 +755,30 @@ impl Sidebar {
     fn make_row(
         self: &Rc<Self>,
         name: &str,
+        host: Option<&str>,
         icon: &gio::Icon,
         tooltip: Option<&str>,
         eject: Option<Eject>,
     ) -> gtk::ListBoxRow {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         content.append(&gtk::Image::from_gicon(icon));
-        content.append(
-            &gtk::Label::builder()
-                .label(name)
-                .xalign(0.0)
-                .hexpand(true)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build(),
-        );
+        let label = gtk::Label::builder()
+            .label(name)
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        // A favourite on another computer says which, fainter, after its
+        // name: one label, so a long one is still cut off at the end.
+        if let Some(host) = host {
+            label.set_label(&format!("{name} @ {host}"));
+            let mut faint = gtk::pango::AttrInt::new_foreground_alpha(u16::MAX / 2);
+            faint.set_start_index(name.len() as u32);
+            let attributes = gtk::pango::AttrList::new();
+            attributes.insert(faint);
+            label.set_attributes(Some(&attributes));
+        }
+        content.append(&label);
         if let Some(eject) = eject {
             let tip = match eject {
                 Eject::Unmount(_) => "Unmount",
@@ -1258,7 +1295,17 @@ impl Sidebar {
             }
             None => Vec::new(),
         };
-        let (index, y_in_row, height) = self.row_at(y).ok_or(false)?;
+        let Some((index, y_in_row, height)) = self.row_at(y) else {
+            // The empty space below the rows: folders become the last
+            // favourites, as in Nautilus; other files have nowhere to go.
+            return if self.drag_has_folders(&drop, &files)
+                && panel::offered_actions(&drop).contains(gdk::DragAction::COPY)
+            {
+                Ok(FilePlan::Add(self.favourite_count()))
+            } else {
+                Err(false)
+            };
+        };
         let (place, target, is_trash) = {
             let entries = self.entries.borrow();
             let entry = entries.get(index).ok_or(false)?;
@@ -1605,7 +1652,19 @@ mod tests {
         let home = gio::File::for_path(glib::home_dir()).uri();
         assert_eq!(bookmark_name(&home, None), "Home");
         // A server's top folder has no name of its own: the address.
-        assert_eq!(bookmark_name("sftp://example.com/", None), "sftp://example.com/");
+        assert_eq!(bookmark_name("sftp://example.com/", None), "example.com");
+        assert_eq!(bookmark_name("smb://nas.local/network-share/", None), "network-share");
+        assert_eq!(bookmark_name("smb://nas.local/My%20Films/", None), "My Films");
+        assert_eq!(bookmark_name("network:///", None), "network:///");
+
+        // The computer, for favourites that are on one.
+        let host = |uri: &str| bookmark_host(uri, &bookmark_name(uri, None));
+        assert_eq!(host("smb://nas.local:445/network-share/"), Some("nas".into()));
+        assert_eq!(host("sftp://example.com/share/docs"), Some("example.com".into()));
+        assert_eq!(host("sftp://example.com/"), None);
+        assert_eq!(host("sftp://nas.local/"), None);
+        assert_eq!(host("file:///home/me/Work"), None);
+        assert_eq!(host("trash:///"), None);
     }
 
     #[test]
