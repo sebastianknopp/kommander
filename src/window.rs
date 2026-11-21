@@ -40,8 +40,13 @@ struct State {
     /// The draggable divider between the two slots.
     split: Rc<Split>,
     previews: [Rc<Preview>; 2],
-    /// The half the preview covers at the moment, if it is open.
+    /// The half the preview covers at the moment, if it is open. In
+    /// single-panel mode in a narrow window that is the active panel's own
+    /// (the preview takes the list's place, see `preview_in_place`).
     previewing: Cell<Option<usize>>,
+    /// Only the active panel is shown (Ctrl+1); the other one keeps its
+    /// folder, marks and cursor out of sight, and Tab shows it instead.
+    single: Cell<bool>,
     toasts: adw::ToastOverlay,
     /// The favourites sidebar on the left (F1).
     sidebar: Rc<Sidebar>,
@@ -73,14 +78,17 @@ impl State {
     /// Makes panel `index` the active one. With `focus`, also moves the
     /// keyboard focus into it (not needed when it already got focus by a click).
     fn activate(&self, index: usize, focus: bool) {
-        // The preview is in the way of the panel that gets the cursor.
-        if self.previewing.get() == Some(index) {
+        // The preview is in the way of the panel that gets the cursor. With
+        // one panel shown, the other one takes the whole place, preview or not.
+        if self.previewing.get() == Some(index) || (self.single.get() && self.previewing.get().is_some()) {
             self.close_preview();
         }
         self.active.set(index);
         for (i, panel) in self.panels.iter().enumerate() {
             panel.set_active(i == index);
         }
+        // Shown before the focus moves there (never into a hidden panel).
+        self.show_slots();
         self.sidebar.set_current(self.panels[index].folder());
         if focus {
             self.panels[index].focus();
@@ -130,7 +138,9 @@ impl State {
 
     /// F3: shows the file under the cursor in place of the opposite panel,
     /// or puts the panel back. With the "Window" setting, GNOME's previewer
-    /// window opens (or closes) instead.
+    /// window opens (or closes) instead. In single-panel mode the hidden
+    /// half comes out for the preview if the window is wide enough for two
+    /// panels; otherwise the preview takes the list's place until closed.
     fn toggle_preview(&self) {
         if self.settings.borrow().preview_in_window {
             if let Some(file) = self.cursor_file() {
@@ -139,9 +149,11 @@ impl State {
         } else if self.previewing.get().is_some() {
             self.close_preview();
         } else {
-            let covered = 1 - self.active.get();
+            let active = self.active.get();
+            let covered = if self.single.get() && !self.split.fits_two() { active } else { 1 - active };
             self.slots[covered].set_visible_child_name("preview");
             self.previewing.set(Some(covered));
+            self.show_slots();
             self.previews[covered].show(self.cursor_file());
         }
     }
@@ -153,6 +165,41 @@ impl State {
         };
         self.previews[covered].stop();
         self.slots[covered].set_visible_child_name("files");
+        self.show_slots();
+        // The preview was in the list's place: the list gets the keys back.
+        if covered == self.active.get() {
+            self.focus_panel();
+        }
+    }
+
+    /// The preview has taken the active panel's place (single-panel mode,
+    /// narrow window): its list is out of sight and has no focus.
+    fn preview_in_place(&self) -> bool {
+        self.previewing.get() == Some(self.active.get())
+    }
+
+    /// Shows both halves, or in single-panel mode only the active panel's
+    /// (and the other one while it shows the preview beside it).
+    fn show_slots(&self) {
+        let (single, active) = (self.single.get(), self.active.get());
+        for (i, slot) in self.slots.iter().enumerate() {
+            slot.set_visible(!single || i == active || self.previewing.get() == Some(i));
+        }
+    }
+
+    /// Ctrl+1 (`on`) and Ctrl+2: shows only the active panel, or both.
+    fn set_single(&self, on: bool) {
+        if self.single.get() == on {
+            return;
+        }
+        self.close_preview();
+        self.single.set(on);
+        self.show_slots();
+        if !self.sidebar.has_focus() {
+            self.focus_panel();
+        }
+        self.settings.borrow_mut().single_panel = on;
+        self.save_settings();
     }
 
     /// The cursor of panel `index` moved: the preview follows.
@@ -170,9 +217,18 @@ impl State {
     }
 
     /// Back from the sidebar to the active panel (unless a dialog has the keys).
+    /// While the preview stands in the list's place, the focus goes nowhere
+    /// (the window's key handler steers the hidden list).
     fn focus_panel(&self) {
-        let window = self.panels_box.root().and_downcast::<adw::ApplicationWindow>();
-        if !window.is_some_and(|window| window.visible_dialog().is_some()) {
+        let Some(window) = self.panels_box.root().and_downcast::<adw::ApplicationWindow>() else {
+            return;
+        };
+        if window.visible_dialog().is_some() {
+            return;
+        }
+        if self.preview_in_place() {
+            GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+        } else {
             self.panels[self.active.get()].focus();
         }
     }
@@ -205,6 +261,7 @@ impl State {
             settings.folders[i] = panel.folder().map(|folder| folder.uri().into());
             settings.sort[i] = panel.sort();
         }
+        settings.active_panel = self.active.get();
         settings.save();
     }
 }
@@ -373,6 +430,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             split,
             previews,
             previewing: Cell::new(None),
+            single: Cell::new(settings.single_panel),
             toasts: toast_overlay.clone(),
             sidebar,
             settings: RefCell::new(settings),
@@ -489,11 +547,8 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         let state_weak = state_weak.clone();
         glib::idle_add_local_once(move || {
             // A dialog that opened meanwhile keeps the focus.
-            if let Some(state) = state_weak.upgrade()
-                && let Some(window) = state.panels_box.root().and_downcast::<adw::ApplicationWindow>()
-                && window.visible_dialog().is_none()
-            {
-                state.panels[state.active.get()].focus();
+            if let Some(state) = state_weak.upgrade() {
+                state.focus_panel();
             }
         });
     });
@@ -581,6 +636,10 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             && key.to_lower() == gdk::Key::l
         {
             panel.close_search();
+            // The path strip is part of the list the preview stands in for.
+            if window_state.preview_in_place() {
+                window_state.close_preview();
+            }
             panel.edit_location();
             return glib::Propagation::Stop;
         }
@@ -614,6 +673,17 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             return glib::Propagation::Stop;
         }
 
+        // Ctrl+1 shows only the active panel, Ctrl+2 both (from anywhere,
+        // as F1). Caught here so that they work whatever has the focus.
+        if modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK
+            && matches!(key, gdk::Key::_1 | gdk::Key::KP_1 | gdk::Key::_2 | gdk::Key::KP_2)
+        {
+            panel.close_search();
+            let one = matches!(key, gdk::Key::_1 | gdk::Key::KP_1);
+            window.change_action_state("single-panel", &one.to_variant());
+            return glib::Propagation::Stop;
+        }
+
         // While the keyboard is in the sidebar, its keys are its own: none
         // of the panel's keys below may act on the panel's files from there.
         if window_state.sidebar.has_focus() {
@@ -624,6 +694,14 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         // sight: only the keys that go somewhere else get through.
         if panel.is_waiting() {
             return waiting_key(&window_state, key, modifiers);
+        }
+
+        // While the preview stands in the list's place, the list is out of
+        // sight: only the keys that make sense for the previewed file act.
+        if window_state.preview_in_place()
+            && let Some(handled) = in_place_preview_key(&window_state, key, modifiers)
+        {
+            return handled;
         }
 
         // Ctrl+A marks all files, Ctrl+Shift+A none. (Caught here because
@@ -785,7 +863,10 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     add_open_action(&window, &state);
 
     window.present();
-    state.activate(0, true);
+    // The panel active last time, unless folders were given to open (the
+    // first of them, in the left panel, is what should be in sight).
+    let first = if files.is_empty() { state.settings.borrow().active_panel.min(1) } else { 0 };
+    state.activate(first, true);
     // A file given on the command line: the cursor goes onto it.
     for (i, target) in targets.iter().enumerate() {
         if let Some(target) = target
@@ -867,6 +948,38 @@ fn waiting_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> gl
     glib::Propagation::Stop
 }
 
+/// A key pressed while the preview stands in the place of the active
+/// panel's list (single-panel mode in a narrow window). Escape closes it,
+/// Tab goes to the other panel, Up and Down move the hidden list's cursor
+/// (the preview follows), Enter opens the file. The file operation keys,
+/// Ctrl+X/C/V and Ctrl+Shift+C act on the previewed file as usual (None:
+/// on to their code). Keys for what is out of sight (marking, Backspace,
+/// type-to-search, the Menu key, Ctrl+A) do nothing.
+fn in_place_preview_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> Option<glib::Propagation> {
+    use gdk::Key;
+    let active = state.active.get();
+    let panel = &state.panels[active];
+    let plain = !modifiers.intersects(any_modifier());
+    let ctrl = modifiers & !(gdk::ModifierType::LOCK_MASK | gdk::ModifierType::SHIFT_MASK)
+        == gdk::ModifierType::CONTROL_MASK;
+    match key {
+        Key::Escape if plain => state.close_preview(),
+        Key::Tab | Key::ISO_Left_Tab | Key::KP_Tab
+            if !modifiers.intersects(any_modifier() & !gdk::ModifierType::SHIFT_MASK) =>
+        {
+            state.activate(1 - active, true)
+        }
+        Key::Up | Key::KP_Up if plain => panel.step_cursor(false),
+        Key::Down | Key::KP_Down if plain => panel.step_cursor(true),
+        Key::Return | Key::KP_Enter | Key::ISO_Enter if plain => panel.open_cursor(),
+        Key::F2 | Key::F3 | Key::F5 | Key::F6 | Key::F7 | Key::F8 | Key::Delete | Key::KP_Delete => return None,
+        Key::F10 if plain => return Some(glib::Propagation::Proceed),
+        _ if ctrl && matches!(key.to_lower(), Key::x | Key::c | Key::v) => return None,
+        _ => {}
+    }
+    Some(glib::Propagation::Stop)
+}
+
 /// Connects the favourites sidebar: its entries send the active panel
 /// there, it follows the active panel's folder, files dropped onto it go
 /// the same way as files dropped onto a panel, and panels showing a drive
@@ -877,6 +990,10 @@ fn connect_sidebar(state: &Rc<State>) {
         let Some(state) = state_weak.upgrade() else {
             return;
         };
+        // The list comes back from behind the preview to show the folder.
+        if state.preview_in_place() {
+            state.close_preview();
+        }
         // Already there: the cursor and marks stay as they are.
         state.panels[state.active.get()].go_to(&folder);
         state.focus_panel();
@@ -934,6 +1051,10 @@ fn main_menu_button() -> gtk::MenuButton {
     // F1 is caught by the window's key handler, not an accelerator; shown anyway.
     favourites_item.set_attribute_value("accel", Some(&"F1".to_variant()));
     view_section.append_item(&favourites_item);
+    let single_item = gio::MenuItem::new(Some(dialogs::SINGLE_PANEL_MENU), Some("win.single-panel"));
+    // Ctrl+1 and Ctrl+2 are caught by the window's key handler as well.
+    single_item.set_attribute_value("accel", Some(&"<Control>1".to_variant()));
+    view_section.append_item(&single_item);
     view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
     view_section.append(Some("_Reload"), Some("win.reload"));
     menu.append_section(None, &view_section);
@@ -1132,6 +1253,31 @@ fn add_window_actions(
         })
         .build();
 
+    // Ctrl+1 / Ctrl+2 (caught in the key handler) or the menu's check
+    // item: one panel or both. The menu toggles; the keys set the state.
+    let state_weak = Rc::downgrade(state);
+    let window_weak = window.downgrade();
+    let single_panel = gio::ActionEntry::builder("single-panel")
+        .state(state.settings.borrow().single_panel.to_variant())
+        .activate(|_, action, _| {
+            let on = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            action.change_state(&on.to_variant());
+        })
+        .change_state(move |_, action, value| {
+            let (Some(state), Some(window)) = (state_weak.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            let Some(on) = value.and_then(|value| value.get::<bool>()) else {
+                return;
+            };
+            if window.visible_dialog().is_some() || state.typing_path() {
+                return;
+            }
+            action.set_state(&on.to_variant());
+            state.set_single(on);
+        })
+        .build();
+
     // Ctrl+D: the active panel's folder becomes a favourite (as in GNOME Files).
     let state_weak = Rc::downgrade(state);
     let window_weak = window.downgrade();
@@ -1200,7 +1346,9 @@ fn add_window_actions(
             state.panels[state.active.get()].reload();
         })
         .build();
-    window.add_action_entries([show_hidden, edit, terminal, favourites, add_favourite, connect_server, reload]);
+    window.add_action_entries([
+        show_hidden, edit, terminal, favourites, single_panel, add_favourite, connect_server, reload,
+    ]);
     app.set_accels_for_action("win.reload", &["<Control>r"]);
     add_file_actions(window, state);
     app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
@@ -2120,6 +2268,8 @@ fn find_label(root: &gtk::Widget, text: &str) -> Option<gtk::Label> {
 fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let panels = adw::ShortcutsSection::new(Some("Panels"));
     panels.add(adw::ShortcutsItem::new("Switch to the other panel", "Tab"));
+    panels.add(adw::ShortcutsItem::new(dialogs::SHORTCUT_ONE_PANEL, "<Control>1"));
+    panels.add(adw::ShortcutsItem::new(dialogs::SHORTCUT_TWO_PANELS, "<Control>2"));
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
     panels.add(adw::ShortcutsItem::new("Open folder or file", "Return"));
     panels.add(adw::ShortcutsItem::new("Go to the parent folder", "BackSpace"));
@@ -2167,7 +2317,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
 
     let files = adw::ShortcutsSection::new(Some("Files"));
     files.add(adw::ShortcutsItem::new("Rename the file under the cursor", "F2"));
-    files.add(adw::ShortcutsItem::new("Preview in the other panel", "F3"));
+    files.add(adw::ShortcutsItem::new("Preview the file under the cursor", "F3"));
     files.add(adw::ShortcutsItem::new("Close the preview", "F3 Escape"));
     files.add(adw::ShortcutsItem::new("Pause or play the previewed video or sound", "<Control>space"));
     files.add(adw::ShortcutsItem::new("Edit in the text editor", "F4"));

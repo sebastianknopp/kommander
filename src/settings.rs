@@ -174,6 +174,10 @@ pub struct Settings {
     pub recent_servers: Vec<String>,
     /// Where the divider between the panels is, as the left panel's share.
     pub panel_split: f64,
+    /// Only the active panel is shown (Ctrl+1; Ctrl+2 shows both).
+    pub single_panel: bool,
+    /// The panel that was active last (0 left, 1 right).
+    pub active_panel: usize,
 }
 
 impl Default for Settings {
@@ -190,6 +194,8 @@ impl Default for Settings {
             window: WindowSize::default(),
             recent_servers: Vec::new(),
             panel_split: 0.5,
+            single_panel: false,
+            active_panel: 0,
         }
     }
 }
@@ -269,6 +275,10 @@ impl Settings {
                 })
                 .unwrap_or_default(),
             panel_split: checked_split(file.double(GROUP, "panel-split").unwrap_or(defaults.panel_split)),
+            single_panel: boolean("single-panel").unwrap_or(defaults.single_panel),
+            active_panel: string("active-panel")
+                .and_then(|v| PANEL_KEYS.iter().position(|panel| *panel == v))
+                .unwrap_or(defaults.active_panel),
         }
     }
 
@@ -285,6 +295,8 @@ impl Settings {
         file.set_boolean(GROUP, "window-maximized", self.window.maximized);
         // Three decimals are plenty (set_double would write 0.29999999999999999).
         file.set_string(GROUP, "panel-split", &format!("{:.3}", self.panel_split));
+        file.set_boolean(GROUP, "single-panel", self.single_panel);
+        file.set_string(GROUP, "active-panel", PANEL_KEYS[self.active_panel.min(1)]);
         if !self.recent_servers.is_empty() {
             file.set_value(GROUP, "recent-servers", &string_list_value(&self.recent_servers));
         }
@@ -360,6 +372,8 @@ mod tests {
                 "dav://server/".into(),
             ],
             panel_split: 0.3,
+            single_panel: true,
+            active_panel: 1,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
@@ -373,7 +387,7 @@ mod tests {
         file.load_from_data(
             "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n\
              look=purple\ncolours=pink\ntranslucent-window=yes\nwindow-width=wide\nwindow-height=-5\n\
-             window-maximized=very\npanel-split=wide\n",
+             window-maximized=very\npanel-split=wide\nsingle-panel=one\nactive-panel=middle\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();

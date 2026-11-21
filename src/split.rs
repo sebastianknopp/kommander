@@ -132,6 +132,12 @@ impl Split {
         self.on_changed.replace(Some(Box::new(f)));
     }
 
+    /// Whether the room the panels share is wide enough for two panels of
+    /// at least `MIN_PANEL` (also while only one of them is shown).
+    pub fn fits_two(&self) -> bool {
+        self.total(self.paned.width()) >= 2 * MIN_PANEL
+    }
+
     /// The room the two panels share in `width`, without the line.
     fn total(&self, width: i32) -> i32 {
         let handle = self.handle().map_or(1, |handle| handle.measure(gtk::Orientation::Horizontal, -1).0);

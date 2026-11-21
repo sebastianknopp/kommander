@@ -922,6 +922,22 @@ impl Panel {
         true
     }
 
+    /// Moves the cursor one row down or up, stopping at the ends, without
+    /// giving the list the focus: for the preview that takes the list's
+    /// place in a narrow window in single-panel mode (window.rs), which
+    /// follows the cursor.
+    pub fn step_cursor(&self, down: bool) {
+        let count = self.selection.n_items();
+        let position = self.selection.selected();
+        if count == 0 || position == gtk::INVALID_LIST_POSITION {
+            return;
+        }
+        let target = if down { (position + 1).min(count - 1) } else { position.saturating_sub(1) };
+        if target != position {
+            self.column_view.scroll_to(target, None, gtk::ListScrollFlags::SELECT, None);
+        }
+    }
+
     /// Marks every file in the panel (Ctrl+A), or none (Ctrl+Shift+A).
     pub fn mark_all(&self, mark: bool) {
         {

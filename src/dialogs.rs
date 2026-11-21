@@ -527,6 +527,14 @@ pub fn fkey_tooltip(key: &str) -> String {
     format!("{name} ({key})")
 }
 
+// --- Single-panel mode ---
+
+/// The main menu's check item for single-panel mode (Ctrl+1 / Ctrl+2).
+pub const SINGLE_PANEL_MENU: &str = "_Single Panel";
+/// The shortcuts dialog's lines for it.
+pub const SHORTCUT_ONE_PANEL: &str = "Show only the active panel";
+pub const SHORTCUT_TWO_PANELS: &str = "Show both panels again";
+
 // --- Error details and the error log (see report.rs) ---
 
 /// The button on an error toast, and the title of what it opens.
@@ -1337,6 +1345,8 @@ mod tests {
         assert_eq!(fkey_tooltip("F5"), "Copy to the Other Panel (F5)");
         assert_eq!(fkey_tooltip("F8"), "Move to the Trash (F8)");
         assert_eq!(fkey_tooltip("F12"), "F12");
+        assert_eq!(SINGLE_PANEL_MENU, "_Single Panel");
+        assert_eq!(SHORTCUT_TWO_PANELS, "Show both panels again");
         for n in 1..=8 {
             let key = format!("F{n}");
             assert!(fkey_tooltip(&key).ends_with(&format!(" ({key})")));

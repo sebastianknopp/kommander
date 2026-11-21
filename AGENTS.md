@@ -75,7 +75,16 @@ Module map (`src/`):
   window (the `win.open-argument` action, looked up without blocking).
 - `window.rs` — main window, header bar, menus, all actions and key
   bindings, the shortcuts and About dialogs; wires panels, sidebar,
-  preview and jobs.
+  preview and jobs. Single-panel mode (`win.single-panel`, Ctrl+1 one
+  panel / Ctrl+2 both, caught in the key handler; a check item in the main
+  menu): the inactive slot is hidden but its panel lives on, `activate`
+  (Tab) shows the other one instead (`show_slots`, always before the
+  focus moves, so the focus never lands in a hidden widget), and F5/F6
+  still go into the hidden panel's folder. F3 there shows the hidden half
+  with the preview if `Split::fits_two`, otherwise the preview takes the
+  active panel's place (`preview_in_place`): the list has no focus then
+  and `in_place_preview_key` steers it (Up/Down move its cursor, Escape
+  or F3 closes, Tab flips).
 - `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
   Going to a folder keeps the old one on screen until the new one is read,
@@ -174,7 +183,9 @@ Module map (`src/`):
   including the look (`look=` gnome, omarchy-colours or omarchy; an old
   file's `colours=` still counts), the window's un-maximised size and whether it was maximised
   (saved on close, not while fullscreen), `panel-split` (the left panel's
-  share, 0.05–0.95, otherwise half), and `recent-servers` (saved as
+  share, 0.05–0.95, otherwise half), `single-panel` and `active-panel`
+  (left or right; restored at start unless folders are given), and
+  `recent-servers` (saved as
   soon as it changes; GLib's string-list escaping done by hand, since the
   Rust binding lacks `set_string_list`).
 - `theme.rs` — the look (Preferences: GNOME, Omarchy Colours, Omarchy;

@@ -18,7 +18,7 @@ you switch it, and otherwise stays out of your way.
 
 ## Features
 
-- **Two panels** side by side; Tab switches, the function keys do the work
+- **Two panels** side by side with a draggable split, or just one (Ctrl+1); Tab switches
 - **Copy (F5) and move (F6)** to the other panel, in the background, with progress and a queue
 - **Asks before replacing** a file: skip, replace or keep both
 - **Rename (F2), new folder (F7), trash (F8)** with Undo, delete for good (Shift+F8)
