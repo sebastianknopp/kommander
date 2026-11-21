@@ -60,7 +60,7 @@ window.csd {
 .panel columnview > header > button,
 .favourites .favourites-title,
 .preview .preview-title > box > label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: bold;
   text-transform: uppercase;
   letter-spacing: 1px;
