@@ -22,6 +22,7 @@ mod report;
 mod progress;
 mod settings;
 mod sidebar;
+mod split;
 mod start;
 mod theme;
 mod window;

@@ -3,9 +3,13 @@
  * light and dark mode follow the system automatically.
  * The file list styling follows Nautilus's list view (GPL-3.0-or-later). */
 
-/* Thin line between the two panels. */
-.panels > .slot + .slot {
-  border-left: 1px solid var(--border-color);
+/* Thin line between the two panels. It can be dragged (split.rs): the
+ * area that takes the mouse is a few pixels wider than the line. */
+paned.panels-split > separator {
+  min-width: 1px;
+  background-image: none;
+  background-color: var(--border-color);
+  box-shadow: none;
 }
 
 /* Path strip above each file list, holding the breadcrumbs.

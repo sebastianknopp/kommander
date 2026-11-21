@@ -21,6 +21,7 @@ use crate::progress::Operations;
 use crate::settings::{IconSize, Look, Settings, WindowSize};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
+use crate::split::Split;
 use crate::start::{self, Target};
 use crate::dialogs::label;
 use crate::report::{self, Problem};
@@ -36,6 +37,8 @@ struct State {
     /// The two halves of the window. Each holds its panel and, to show in
     /// its place, a preview of the file under the other panel's cursor.
     slots: [gtk::Stack; 2],
+    /// The draggable divider between the two slots.
+    split: Rc<Split>,
     previews: [Rc<Preview>; 2],
     /// The half the preview covers at the moment, if it is open.
     previewing: Cell<Option<usize>>,
@@ -317,10 +320,9 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         )
     });
 
-    // Two equal-width panels; the separator line between them comes from CSS.
+    // The two panels with the draggable line between them (split.rs).
     let panels_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .homogeneous(true)
         .css_classes(["panels", "view"])
         .build();
 
@@ -329,9 +331,9 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         let slot = gtk::Stack::builder().css_classes(["slot"]).build();
         slot.add_named(panels[i].widget(), Some("files"));
         slot.add_named(previews[i].widget(), Some("preview"));
-        panels_box.append(&slot);
         slot
     });
+    let split = Split::new(&panels_box, &slots[0], &slots[1], settings.panel_split);
 
     // The favourites sidebar left of both panels; hidden, it takes no room.
     let sidebar = Sidebar::new(settings.show_favourites);
@@ -368,6 +370,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             active: Cell::new(0),
             panels_box: panels_box.clone(),
             slots,
+            split,
             previews,
             previewing: Cell::new(None),
             toasts: toast_overlay.clone(),
@@ -414,6 +417,15 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     }
 
     connect_sidebar(&state);
+
+    // A dragged (or reset) divider is remembered.
+    let state_weak = Rc::downgrade(&state);
+    state.split.connect_changed(move |ratio| {
+        if let Some(state) = state_weak.upgrade() {
+            state.settings.borrow_mut().panel_split = ratio;
+            state.settings.borrow().save();
+        }
+    });
 
     header.pack_end(&menu_button);
     header.pack_end(state.operations.widget());

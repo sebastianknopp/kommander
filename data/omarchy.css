@@ -352,8 +352,8 @@ window.omarchy-look toolbarview > .bottom-bar {
 }
 
 /* Lines between the panels, above the status line and search field. */
-.panels > .slot + .slot {
-  border-left: 1px solid var(--om-divider);
+paned.panels-split > separator {
+  background-color: var(--om-divider);
 }
 
 .panel .search-bar,

@@ -147,7 +147,14 @@ impl WindowSize {
 /// Key prefixes of the two panels' own settings ("left-folder" and so on).
 const PANEL_KEYS: [&str; 2] = ["left", "right"];
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The left panel's share of the width both panels have (split.rs), when
+/// the divider between them has been dragged. Outside these, a mistake:
+/// half and half.
+fn checked_split(split: f64) -> f64 {
+    if (0.05..=0.95).contains(&split) { split } else { 0.5 }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub icon_size: IconSize,
     pub show_hidden: bool,
@@ -165,6 +172,26 @@ pub struct Settings {
     /// Server addresses recently connected to with Connect to Server,
     /// newest first (see network.rs).
     pub recent_servers: Vec<String>,
+    /// Where the divider between the panels is, as the left panel's share.
+    pub panel_split: f64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            icon_size: IconSize::default(),
+            show_hidden: false,
+            sort: Default::default(),
+            folders: Default::default(),
+            preview_in_window: false,
+            show_favourites: false,
+            look: Look::default(),
+            translucent: false,
+            window: WindowSize::default(),
+            recent_servers: Vec::new(),
+            panel_split: 0.5,
+        }
+    }
 }
 
 impl Settings {
@@ -241,6 +268,7 @@ impl Settings {
                     list.iter().map(|uri| uri.to_gstr().to_string()).filter(|uri| !uri.is_empty()).collect()
                 })
                 .unwrap_or_default(),
+            panel_split: checked_split(file.double(GROUP, "panel-split").unwrap_or(defaults.panel_split)),
         }
     }
 
@@ -255,6 +283,8 @@ impl Settings {
         file.set_integer(GROUP, "window-width", self.window.width);
         file.set_integer(GROUP, "window-height", self.window.height);
         file.set_boolean(GROUP, "window-maximized", self.window.maximized);
+        // Three decimals are plenty (set_double would write 0.29999999999999999).
+        file.set_string(GROUP, "panel-split", &format!("{:.3}", self.panel_split));
         if !self.recent_servers.is_empty() {
             file.set_value(GROUP, "recent-servers", &string_list_value(&self.recent_servers));
         }
@@ -329,6 +359,7 @@ mod tests {
                 " ftp://ö/".into(),
                 "dav://server/".into(),
             ],
+            panel_split: 0.3,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
@@ -342,7 +373,7 @@ mod tests {
         file.load_from_data(
             "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n\
              look=purple\ncolours=pink\ntranslucent-window=yes\nwindow-width=wide\nwindow-height=-5\n\
-             window-maximized=very\n",
+             window-maximized=very\npanel-split=wide\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();
@@ -383,5 +414,19 @@ mod tests {
         file.load_from_data("[Kommander]\nwindow-width=900\n", glib::KeyFileFlags::NONE).unwrap();
         let window = Settings::from_key_file(&file).window;
         assert_eq!((window.width, window.height, window.maximized), (900, 760, false));
+    }
+
+    #[test]
+    fn panel_split_out_of_range_is_half_and_half() {
+        let split = |text: &str| {
+            let file = glib::KeyFile::new();
+            file.load_from_data(text, glib::KeyFileFlags::NONE).unwrap();
+            Settings::from_key_file(&file).panel_split
+        };
+        assert_eq!(split("[Kommander]\n"), 0.5);
+        assert_eq!(split("[Kommander]\npanel-split=0.7\n"), 0.7);
+        assert_eq!(split("[Kommander]\npanel-split=1.5\n"), 0.5);
+        assert_eq!(split("[Kommander]\npanel-split=-0.2\n"), 0.5);
+        assert_eq!(split("[Kommander]\npanel-split=nan\n"), 0.5);
     }
 }

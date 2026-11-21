@@ -127,6 +127,12 @@ Module map (`src/`):
   (measured, since the looks' fonts differ; a little slack against
   flicker; tested), each button with a tooltip from `dialogs.rs`. The slot
   always keeps its full width.
+- `split.rs` — the draggable line between the two panels (a GtkPaned
+  inside `panels_box`, which stays the outer container). The split is a
+  proportion, worked out again whenever the room changes (window,
+  sidebar, second panel back), never closer than `MIN_PANEL` (280 px) to
+  either edge (`clamp_split`, tested); a double-click on the line makes
+  it half and half; saved as `panel-split=` shortly after a move.
 - `layout.rs` — `FnLayout`, a layout manager run by two closures (GTK's
   GtkCustomLayout has no Rust binding), for containers whose layout
   depends on the room they get (the F-key bar, the panel split).
@@ -167,7 +173,8 @@ Module map (`src/`):
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),
   including the look (`look=` gnome, omarchy-colours or omarchy; an old
   file's `colours=` still counts), the window's un-maximised size and whether it was maximised
-  (saved on close, not while fullscreen), and `recent-servers` (saved as
+  (saved on close, not while fullscreen), `panel-split` (the left panel's
+  share, 0.05–0.95, otherwise half), and `recent-servers` (saved as
   soon as it changes; GLib's string-list escaping done by hand, since the
   Rust binding lacks `set_string_list`).
 - `theme.rs` — the look (Preferences: GNOME, Omarchy Colours, Omarchy;
