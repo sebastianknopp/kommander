@@ -140,6 +140,13 @@
   font-weight: normal;
 }
 
+/* In a narrow window the buttons first move closer together, then show
+ * only their key boxes (fkeybar.rs picks the version that fits). */
+.fkeybar .fkeys.tight button,
+.fkeybar .fkeys.compact button {
+  padding: 4px 4px;
+}
+
 .fkeybar .keycap {
   font-size: smaller;
   font-weight: bold;

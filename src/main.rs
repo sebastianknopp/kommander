@@ -6,6 +6,7 @@ mod dialogs;
 mod dnd;
 mod fkeybar;
 mod jobs;
+mod layout;
 mod listings;
 mod location;
 mod marks;

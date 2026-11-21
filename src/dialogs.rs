@@ -508,6 +508,25 @@ pub fn could_not_open_with(name: &str, app: &str) -> String {
     format!("Could not open “{name}” with {app}")
 }
 
+// --- Function-key bar ---
+
+/// The tooltip of a function-key button: what the key does, then the key
+/// ("Copy (F5)"). Needed most when the bar shows only the keys.
+pub fn fkey_tooltip(key: &str) -> String {
+    let name = match key {
+        "F1" => "Favourites",
+        "F2" => "Rename",
+        "F3" => "Preview",
+        "F4" => "Edit",
+        "F5" => "Copy to the Other Panel",
+        "F6" => "Move to the Other Panel",
+        "F7" => "New Folder",
+        "F8" => "Move to the Trash",
+        _ => return key.to_string(),
+    };
+    format!("{name} ({key})")
+}
+
 // --- Error details and the error log (see report.rs) ---
 
 /// The button on an error toast, and the title of what it opens.
@@ -1310,5 +1329,17 @@ mod tests {
         assert_eq!(loading_progress(12, 1200), "1,200 items so far · 12 s");
         assert_eq!(loading_progress(0, 1234567), "1,234,567 items so far");
         assert_eq!(loading_progress(0, 999), "999 items so far");
+    }
+
+    #[test]
+    fn fkey_tooltips_name_the_key() {
+        assert_eq!(fkey_tooltip("F1"), "Favourites (F1)");
+        assert_eq!(fkey_tooltip("F5"), "Copy to the Other Panel (F5)");
+        assert_eq!(fkey_tooltip("F8"), "Move to the Trash (F8)");
+        assert_eq!(fkey_tooltip("F12"), "F12");
+        for n in 1..=8 {
+            let key = format!("F{n}");
+            assert!(fkey_tooltip(&key).ends_with(&format!(" ({key})")));
+        }
     }
 }

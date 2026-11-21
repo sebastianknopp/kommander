@@ -311,6 +311,11 @@ window.omarchy-look toolbarview > .bottom-bar {
   color: var(--window-fg-color);
 }
 
+.fkeybar .fkeys.tight button,
+.fkeybar .fkeys.compact button {
+  padding: 3px 4px;
+}
+
 .fkeybar .keycap {
   font-size: 10px;
   padding: 0 4px;

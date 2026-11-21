@@ -122,7 +122,14 @@ Module map (`src/`):
 - `fkeybar.rs` — the function-key bar at the bottom, with a slot at its
   right end that holds the main menu and operations buttons in the
   Omarchy look (moved there from the header bar by `window.rs`'s
-  `apply_look`, which also hides the top bar).
+  `apply_look`, which also hides the top bar). It holds three versions of
+  the keys (full, "tight", keys only) and shows the fullest one that fits
+  (measured, since the looks' fonts differ; a little slack against
+  flicker; tested), each button with a tooltip from `dialogs.rs`. The slot
+  always keeps its full width.
+- `layout.rs` — `FnLayout`, a layout manager run by two closures (GTK's
+  GtkCustomLayout has no Rust binding), for containers whose layout
+  depends on the room they get (the F-key bar, the panel split).
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
   messages (with tests).
 - `report.rs` — reporting errors: the toast with a Details button, the
