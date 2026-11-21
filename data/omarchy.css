@@ -173,8 +173,25 @@ toggle-group > toggle:active {
   background-color: var(--om-pressed);
 }
 
-switch > slider {
+/* The shell's toggle: a square track with a line, a square knob in the
+ * text colour. */
+switch {
+  background-color: var(--om-rest);
+  box-shadow: inset 0 0 0 1px var(--om-input-line);
+}
+
+switch:checked {
+  background-color: var(--accent-bg-color);
   box-shadow: none;
+}
+
+switch > slider {
+  background-color: var(--window-fg-color);
+  box-shadow: none;
+}
+
+switch:checked > slider {
+  background-color: var(--accent-fg-color);
 }
 
 check, radio {
@@ -187,10 +204,16 @@ check:checked, radio:checked {
 
 /* --- Cards: popovers, menus, tooltips, dialogs, toasts --- */
 
-popover > contents,
-popover > arrow {
+popover > contents {
   box-shadow: none;
   border: 1px solid var(--om-card-line);
+}
+
+/* No arrow: the shell's cards are plain rectangles. */
+popover > arrow {
+  background: none;
+  border: none;
+  box-shadow: none;
 }
 
 popover.menu modelbutton {
