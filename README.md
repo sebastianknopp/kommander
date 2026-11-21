@@ -7,11 +7,11 @@ how GNOME Files looks. Copy with F5, move with F6, preview with F3 in the
 other panel. It talks to your NAS, follows your Omarchy theme the moment
 you switch it, and otherwise stays out of your way.
 
-![Kommander with the Omarchy theme's colours](docs/screenshots/main-omarchy.png)
+![The Omarchy look: square and monospace, like Omarchy's own apps](docs/screenshots/main-omarchy.png)
 
 | | |
 | --- | --- |
-| ![The plain GNOME look, dark](docs/screenshots/main-gnome.png) | ![The plain GNOME look, light](docs/screenshots/main-gnome-light.png) |
+| ![The GNOME look, dark](docs/screenshots/main-gnome.png) | ![The GNOME look, light](docs/screenshots/main-gnome-light.png) |
 | ![Image preview](docs/screenshots/preview-image.png) | ![Code preview](docs/screenshots/preview-code.png) |
 | ![Right-click menu](docs/screenshots/context-menu.png) | ![Copy to the other panel](docs/screenshots/copy.png) |
 | ![Connect to Server](docs/screenshots/network.png) | |
