@@ -111,7 +111,10 @@ Module map (`src/`):
   breadcrumbs' place (a stack holding both), what typed text means
   (tested), Tab completion of folder names; going there through
   `network::reach` (mounting a network location first). While it is open, `window.rs`'s key handler hands it every key.
-- `marks.rs` — the set of marked files per panel (by URI).
+- `marks.rs` — the set of marked files per panel (by URI). Marked files show
+  as filled rows (the "marked" class on the row, set by `MarkedCells` in
+  `panel.rs`; never while the list is building its rows, GTK crashes), and
+  a plain click off them drops the marks, as a selection in GNOME Files.
 - `fkeybar.rs` — the function-key bar at the bottom.
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
   messages (with tests).

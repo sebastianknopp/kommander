@@ -526,6 +526,9 @@ impl Panel {
             } else if held.contains(gdk::ModifierType::SHIFT_MASK) {
                 true
             } else {
+                // A plain click: off the marked files it drops the marks
+                // (see `click_clears_marks`), then goes on to the row.
+                panel.clicked_plainly(x, y);
                 return;
             };
             if let Some((position, _)) = panel.row_at(x, y) {
@@ -833,6 +836,33 @@ impl Panel {
         self.marked.marks.borrow_mut().toggle(&uri);
         self.marked.show_all();
         self.update_status();
+    }
+
+    /// A click without Ctrl or Shift at `x`, `y` of the file list (left
+    /// or right button): drops the marks unless it lands on a marked file.
+    /// Clicks on the column headers or the scrollbar change nothing.
+    fn clicked_plainly(&self, x: f64, y: f64) {
+        let Some(picked) = self.column_view.pick(x, y, gtk::PickFlags::DEFAULT) else {
+            return;
+        };
+        let mut in_list = false;
+        let mut current = Some(picked.clone());
+        while let Some(widget) = current.filter(|widget| widget != self.column_view.upcast_ref::<gtk::Widget>()) {
+            in_list |= widget.css_name() == "listview";
+            current = widget.parent();
+        }
+        if !in_list {
+            return;
+        }
+        let on_marked = self
+            .marked
+            .position_of(&picked)
+            .and_then(|position| self.entry(position))
+            .and_then(|info| entry_uri(&info))
+            .is_some_and(|uri| self.marked.marks.borrow().contains(&uri));
+        if click_clears_marks(false, on_marked) && !self.marked.marks.borrow().is_empty() {
+            self.clear_marks();
+        }
     }
 
     /// Shift+click on row `position`: marks every file from the cursor's
@@ -1595,7 +1625,8 @@ impl Panel {
     }
 
     /// Calls `f` when the file list is right-clicked, with what the menu
-    /// should act on. A right-clicked row gets the cursor (marks stay).
+    /// should act on. A right-clicked row gets the cursor; marks stay if it
+    /// is one of the marked files and go otherwise, as in GNOME Files.
     pub fn connect_context_menu(self: &Rc<Self>, f: impl Fn(MenuTarget) + 'static) {
         let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1605,6 +1636,7 @@ impl Panel {
             let Some(panel) = weak.upgrade() else {
                 return;
             };
+            panel.clicked_plainly(x, y);
             let row = panel.row_at(x, y).map(|(position, _)| position);
             if let Some(position) = row {
                 select_row(&panel.column_view, position, false);
@@ -2056,6 +2088,20 @@ fn drag_rows(pressed: usize, uris: &[Option<String>], marks: &Marks) -> Vec<usiz
         .collect()
 }
 
+/// The row a cell's content `child` sits in (content, cell, row), if the
+/// cell has been put into one yet.
+fn cell_row(child: &gtk::Widget) -> Option<gtk::Widget> {
+    child.parent()?.parent().filter(|row| row.css_name() == "row")
+}
+
+/// Whether a click on the file list drops the marks, as a plain click
+/// drops the selection in GNOME Files: one without Ctrl or Shift that
+/// lands on anything but a marked file (another file, "..", empty space).
+/// A click on a marked file keeps them, so the marked block can be dragged.
+fn click_clears_marks(ctrl_or_shift: bool, on_marked: bool) -> bool {
+    !ctrl_or_shift && !on_marked
+}
+
 /// The list row that `widget` is part of. (Safe here, unlike while rows
 /// are being built: rows under the pointer are complete.)
 fn row_widget(widget: &gtk::Widget) -> Option<gtk::Widget> {
@@ -2198,10 +2244,28 @@ impl MarkedCells {
         self.cells.borrow_mut().retain(|cell| match cell.upgrade() {
             Some(cell) => {
                 self.show(&cell);
+                self.show_row(&cell);
                 true
             }
             None => false,
         });
+    }
+
+    /// Shows the row `cell` is in as marked or not: the fill of a marked
+    /// file is the row's (see style.css). Never while the list is building
+    /// or rebinding its rows (GTK trips over a row changed under its
+    /// hands): from `show_all`, and after a bind in an idle moment, when
+    /// the cell is asked afresh which file it shows.
+    fn show_row(&self, cell: &gtk::ColumnViewCell) {
+        let Some(row) = cell.child().as_ref().and_then(cell_row) else {
+            return;
+        };
+        let uri = cell.item().and_downcast::<gio::FileInfo>().and_then(|info| entry_uri(&info));
+        if uri.is_some_and(|uri| self.marks.borrow().contains(&uri)) {
+            row.add_css_class("marked");
+        } else {
+            row.remove_css_class("marked");
+        }
     }
 
     /// Whether the list shows `name` shortened. All name cells are equally
@@ -2399,6 +2463,13 @@ fn column(
         };
         bind(&child, &info);
         bind_marked.show(cell);
+        // The row's own mark follows once the list is done with it.
+        let (marked, cell) = (Rc::downgrade(&bind_marked), cell.downgrade());
+        glib::idle_add_local_once(move || {
+            if let (Some(marked), Some(cell)) = (marked.upgrade(), cell.upgrade()) {
+                marked.show_row(&cell);
+            }
+        });
     });
     let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
     column.set_sorter(Some(&sorter_from(compare)));
@@ -2657,6 +2728,16 @@ mod tests {
             sorted(list(), compare_modified, false),
             ["alpha", "Zeta", "file10", "big", "file2"]
         );
+    }
+
+    #[test]
+    fn a_plain_click_off_the_marked_files_drops_the_marks() {
+        assert!(click_clears_marks(false, false));
+        // On a marked file they stay, to be dragged.
+        assert!(!click_clears_marks(false, true));
+        // Ctrl+click and Shift+click change marks themselves.
+        assert!(!click_clears_marks(true, false));
+        assert!(!click_clears_marks(true, true));
     }
 
     #[test]
