@@ -139,7 +139,7 @@ Module map (`src/`):
 - `split.rs` — the draggable line between the two panels (a GtkPaned
   inside `panels_box`, which stays the outer container). The split is a
   proportion, worked out again whenever the room changes (window,
-  sidebar, second panel back), never closer than `MIN_PANEL` (280 px) to
+  sidebar, second panel back), never closer than `MIN_PANEL` (340 px) to
   either edge (`clamp_split`, tested); a double-click on the line makes
   it half and half; saved as `panel-split=` shortly after a move.
 - `layout.rs` — `FnLayout`, a layout manager run by two closures (GTK's

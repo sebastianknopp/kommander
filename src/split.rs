@@ -21,7 +21,7 @@ use gtk::{gdk, glib, graphene};
 use crate::layout::FnLayout;
 
 /// The narrowest a panel may be made by dragging the divider.
-pub const MIN_PANEL: i32 = 280;
+pub const MIN_PANEL: i32 = 340;
 
 /// How far either side of the 1px line a press still counts as on it
 /// (GtkPaned grabs the same extra width).
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn the_divider_stays_away_from_the_edges() {
         assert_eq!(clamp_split(1000, 500), 500);
-        assert_eq!(clamp_split(1000, 300), 300);
+        assert_eq!(clamp_split(1000, 400), 400);
         assert_eq!(clamp_split(1000, 100), MIN_PANEL);
         assert_eq!(clamp_split(1000, 900), 1000 - MIN_PANEL);
         assert_eq!(clamp_split(1000, -5), MIN_PANEL);
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn the_proportion_survives_a_resize() {
-        assert_eq!(position_for(1000, 0.3), 300);
+        assert_eq!(position_for(1000, 0.4), 400);
         assert_eq!(position_for(2000, 0.3), 600);
         assert_eq!(position_for(1000, 0.5), 500);
         // Narrower: the proportion would leave the first panel too small.
