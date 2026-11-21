@@ -298,8 +298,17 @@ window.omarchy-look toolbarview > .bottom-bar {
   border-top: 1px solid var(--om-divider);
 }
 
+/* Quiet until needed: the keys are dimmed and small so they do not
+ * compete with the file names, and come up to full strength under the
+ * pointer. */
 .fkeybar button {
-  padding: 4px 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--window-fg-color) 45%, transparent);
+}
+
+.fkeybar button:hover {
+  color: var(--window-fg-color);
 }
 
 .fkeybar .keycap {
@@ -307,7 +316,11 @@ window.omarchy-look toolbarview > .bottom-bar {
   padding: 0 4px;
   background-color: transparent;
   box-shadow: none;
-  border: 1px solid var(--om-hover-line);
+  border: 1px solid var(--om-divider);
+}
+
+.fkeybar button:hover .keycap {
+  border-color: var(--om-hover-line);
 }
 
 /* The header bar's buttons in the slot at the bar's right end. */
