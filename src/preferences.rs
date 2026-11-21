@@ -3,7 +3,7 @@
 
 use adw::prelude::*;
 
-use crate::settings::{Colours, IconSize, Settings};
+use crate::settings::{IconSize, Look, Settings};
 use crate::theme;
 
 /// Shows the dialog over `parent`, set to `settings`. The `on_…` functions
@@ -13,10 +13,10 @@ pub fn present(
     settings: &Settings,
     on_icon_size: impl Fn(IconSize) + 'static,
     on_preview_in_window: impl Fn(bool) + 'static,
-    on_colours: impl Fn(Colours) + 'static,
+    on_look: impl Fn(Look) + 'static,
     on_translucent: impl Fn(bool) + 'static,
 ) {
-    let Settings { icon_size, preview_in_window, colours, translucent, .. } = *settings;
+    let Settings { icon_size, preview_in_window, look, translucent, .. } = *settings;
     let toggles = adw::ToggleGroup::builder()
         .valign(gtk::Align::Center)
         .homogeneous(true)
@@ -41,30 +41,38 @@ pub fn present(
     let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
     appearance.add(&icon_row);
 
-    // Colours: the Omarchy desktop theme or plain libadwaita. Without
-    // Omarchy there is nothing to follow, so the choice is shown disabled.
-    let sources = adw::ToggleGroup::builder()
+    // Look: plain GNOME, GNOME shapes in the Omarchy theme's colours, or
+    // Omarchy's own app style. Without Omarchy there is no theme to
+    // follow, so the choice is shown disabled, set to GNOME.
+    // Three labels, one long: the row's subtitle wraps rather than the
+    // labels being cut short.
+    let looks = adw::ToggleGroup::builder()
         .valign(gtk::Align::Center)
-        .homogeneous(true)
+        .can_shrink(false)
         .build();
-    sources.add(adw::Toggle::builder().name(Colours::Omarchy.as_str()).label("Omarchy").build());
-    sources.add(adw::Toggle::builder().name(Colours::Gnome.as_str()).label("GNOME").build());
-    let colours_row = adw::ActionRow::builder().title("Colours").build();
-    if theme::available() {
-        colours_row.set_subtitle("Omarchy follows the desktop theme as it changes");
-        sources.set_active_name(Some(colours.as_str()));
-    } else {
-        colours_row.set_subtitle("No Omarchy theme found on this computer");
-        sources.set_active_name(Some(Colours::Gnome.as_str()));
-        colours_row.set_sensitive(false);
+    for (choice, label) in [
+        (Look::Gnome, "GNOME"),
+        (Look::OmarchyColours, "Omarchy Colours"),
+        (Look::Omarchy, "Omarchy"),
+    ] {
+        looks.add(adw::Toggle::builder().name(choice.as_str()).label(label).build());
     }
-    sources.connect_active_name_notify(move |sources| {
-        if let Some(colours) = sources.active_name().and_then(|n| Colours::parse(&n)) {
-            on_colours(colours);
+    let look_row = adw::ActionRow::builder().title("Look").build();
+    if theme::available() {
+        look_row.set_subtitle("The Omarchy looks follow the desktop theme as it changes");
+        looks.set_active_name(Some(look.as_str()));
+    } else {
+        look_row.set_subtitle("No Omarchy theme found on this computer");
+        looks.set_active_name(Some(Look::Gnome.as_str()));
+        look_row.set_sensitive(false);
+    }
+    looks.connect_active_name_notify(move |looks| {
+        if let Some(look) = looks.active_name().and_then(|n| Look::parse(&n)) {
+            on_look(look);
         }
     });
-    colours_row.add_suffix(&sources);
-    appearance.add(&colours_row);
+    look_row.add_suffix(&looks);
+    appearance.add(&look_row);
 
     let translucent_row = adw::SwitchRow::builder()
         .title("Translucent Window")

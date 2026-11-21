@@ -1,0 +1,425 @@
+/* The "Omarchy" look (Preferences > Look): the style of Omarchy's own
+ * shell and apps, laid over data/style.css and libadwaita.
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Loaded only in that look, by theme.rs, in a provider added after
+ * style.css's and before the theme colours' (all at "application"
+ * priority, where the provider added last wins whatever the selectors).
+ * So any property set here beats style.css and libadwaita; rules here only
+ * compete with each other by specificity.
+ *
+ * Taken from the shell's own style files (/usr/share/omarchy/shell:
+ * Commons/Style.qml, Ui/Button.qml, Ui/TextField.qml, Ui/PanelSection-
+ * Header.qml, plugins/menu/Menu.qml, and the theme's shell.toml):
+ * - monospace everywhere (fontconfig maps it to the Omarchy font), body
+ *   12px, captions 10-11px, regular and bold only;
+ * - square corners (Hyprland's rounding is 0), no drop shadows;
+ * - every state is the text colour at a strength over the background:
+ *   resting 4%, hover or keyboard 8% with a 1px line at 25%, selected 18%,
+ *   pressed 22%; dividers 1px at 12%; text inputs a 1px line at 40%;
+ * - cards (menus, popovers, tooltips, dialogs): flat, square, a 1px line
+ *   in the text colour, as the shell's menu card;
+ * - small section headers: caption size, bold, upper case, letter-spaced,
+ *   dimmed.
+ * Colours only from libadwaita's variables (the theme's, see theme.rs),
+ * mixed with transparent; lines are drawn as inset box-shadows where a
+ * border would change a widget's size. */
+
+:root {
+  --window-radius: 0px;
+  --om-rest: color-mix(in srgb, var(--window-fg-color) 4%, transparent);
+  --om-hover: color-mix(in srgb, var(--window-fg-color) 8%, transparent);
+  --om-hover-line: color-mix(in srgb, var(--window-fg-color) 25%, transparent);
+  --om-selected: color-mix(in srgb, var(--window-fg-color) 18%, transparent);
+  --om-pressed: color-mix(in srgb, var(--window-fg-color) 22%, transparent);
+  --om-divider: color-mix(in srgb, var(--window-fg-color) 12%, transparent);
+  --om-input-line: color-mix(in srgb, var(--window-fg-color) 40%, transparent);
+  --om-card-line: var(--window-fg-color);
+  --om-dim: color-mix(in srgb, var(--window-fg-color) 65%, transparent);
+}
+
+/* --- Everywhere --- */
+
+* {
+  font-family: monospace;
+  border-radius: 0;
+}
+
+/* Popovers reset their font (libadwaita: "font: initial"). */
+window, popover.background, tooltip {
+  font-size: 12px;
+}
+
+/* Square window, no shadow around it: Hyprland draws the frame. */
+window.csd {
+  box-shadow: none;
+  outline: none;
+}
+
+/* Small section headers, as the shell's PanelSectionHeader. */
+.panel columnview > header > button,
+.favourites .favourites-title,
+.preview .preview-title > box > label {
+  font-size: 10px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* --- Buttons ---
+ * Kept to low specificity so the few special cases below can win. */
+
+button {
+  background-color: var(--om-rest);
+}
+
+button.flat,
+headerbar button,
+menubutton.flat > button,
+.panel columnview > header > button {
+  background-color: transparent;
+}
+
+button:hover,
+button.keyboard-activating {
+  background-color: var(--om-hover);
+  box-shadow: inset 0 0 0 1px var(--om-hover-line);
+}
+
+button:checked {
+  background-color: var(--om-selected);
+}
+
+button:active,
+button:checked:active {
+  background-color: var(--om-pressed);
+}
+
+/* A focused button shows the 1px line, not libadwaita's accent ring. */
+button:focus:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--om-hover-line);
+}
+
+/* Suggested and destructive buttons keep their colour (a destructive
+ * one's accent is libadwaita's red). */
+button.suggested-action,
+button.suggested-action:hover,
+button.suggested-action:active,
+button.destructive-action,
+button.destructive-action:hover,
+button.destructive-action:active {
+  background-color: var(--accent-bg-color);
+}
+
+/* The current folder's breadcrumb and the column headers are not buttons
+ * to the eye. */
+.path-strip .path-button.current-dir,
+.path-strip .path-button.current-dir:hover,
+.path-strip .path-button.current-dir:active,
+.panel columnview > header > button:hover,
+.panel columnview > header > button:active {
+  background: none;
+  box-shadow: none;
+}
+
+/* --- Text inputs --- */
+
+entry, spinbutton {
+  background-color: var(--om-rest);
+  box-shadow: inset 0 0 0 1px var(--om-input-line);
+}
+
+entry:focus-within, spinbutton:focus-within {
+  outline: none;
+  background-color: var(--om-hover);
+  box-shadow: inset 0 0 0 1px var(--accent-color);
+}
+
+entry.error:focus-within {
+  box-shadow: inset 0 0 0 1px var(--error-color);
+}
+
+entry.flat, entry.flat:focus-within,
+row.entry entry, row.entry entry:focus-within {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+/* --- Toggle groups, switches, checks --- */
+
+toggle-group {
+  background-color: var(--om-rest);
+  box-shadow: inset 0 0 0 1px var(--om-divider);
+}
+
+toggle-group > toggle {
+  font-weight: normal;
+}
+
+toggle-group > toggle:hover {
+  background-color: var(--om-hover);
+}
+
+toggle-group > toggle:checked,
+toggle-group > toggle:checked:hover {
+  background-color: var(--om-selected);
+  color: inherit;
+  font-weight: bold;
+  box-shadow: none;
+}
+
+toggle-group > toggle:active {
+  background-color: var(--om-pressed);
+}
+
+switch > slider {
+  box-shadow: none;
+}
+
+check, radio {
+  box-shadow: inset 0 0 0 1px var(--om-input-line);
+}
+
+check:checked, radio:checked {
+  box-shadow: none;
+}
+
+/* --- Cards: popovers, menus, tooltips, dialogs, toasts --- */
+
+popover > contents,
+popover > arrow {
+  box-shadow: none;
+  border: 1px solid var(--om-card-line);
+}
+
+popover.menu modelbutton {
+  min-height: 28px;
+}
+
+popover.menu modelbutton:hover,
+popover.menu modelbutton:selected {
+  background-color: var(--om-hover);
+  box-shadow: inset 0 0 0 1px var(--om-hover-line);
+  color: var(--accent-color);
+}
+
+popover.menu modelbutton:active {
+  background-color: var(--om-pressed);
+}
+
+popover.menu separator {
+  background-color: var(--om-divider);
+}
+
+tooltip {
+  padding: 4px 8px;
+  box-shadow: none;
+}
+
+tooltip.background {
+  background-color: var(--popover-bg-color);
+  color: var(--popover-fg-color);
+  border: 1px solid var(--om-card-line);
+  font-size: 11px;
+}
+
+floating-sheet > sheet,
+dialog.bottom-sheet sheet {
+  box-shadow: none;
+  outline: 1px solid var(--om-card-line);
+  outline-offset: -1px;
+}
+
+toast {
+  background-color: var(--popover-bg-color);
+  color: var(--popover-fg-color);
+  box-shadow: none;
+  border: 1px solid var(--om-card-line);
+}
+
+/* Boxed lists and cards (Preferences, dialogs, shortcuts): flat, a 1px
+ * line around and between the rows. */
+list.boxed-list, list.content, .card {
+  box-shadow: none;
+  border: 1px solid var(--om-divider);
+}
+
+list.boxed-list > row, list.content > row {
+  border-bottom-color: var(--om-divider);
+}
+
+list.boxed-list > row:not(:selected).activatable:hover,
+list.content > row:not(:selected).activatable:hover {
+  background-image: image(var(--om-hover));
+}
+
+list.boxed-list > row:not(:selected).activatable:active,
+list.content > row:not(:selected).activatable:active {
+  background-image: image(var(--om-pressed));
+}
+
+/* Key caps in the shortcuts dialog. */
+shortcut > .keycap,
+shortcut-label .keycap {
+  box-shadow: none;
+  background-color: var(--om-rest);
+  border: 1px solid var(--om-hover-line);
+}
+
+/* --- The main window --- */
+
+/* The function-key bar: flat, a 1px divider above it; no top bar. */
+window.omarchy-look toolbarview > .bottom-bar {
+  box-shadow: none;
+  border-top: 1px solid var(--om-divider);
+}
+
+.fkeybar button {
+  padding: 4px 8px;
+}
+
+.fkeybar .keycap {
+  font-size: 10px;
+  padding: 0 4px;
+  background-color: transparent;
+  box-shadow: none;
+  border: 1px solid var(--om-hover-line);
+}
+
+/* The header bar's buttons in the slot at the bar's right end. */
+.fkeybar-slot {
+  padding-left: 6px;
+  border-left: 1px solid var(--om-divider);
+}
+
+.fkeybar-slot button,
+.fkeybar-slot menubutton > button {
+  background-color: transparent;
+  min-height: 0;
+  padding: 4px 8px;
+}
+
+.fkeybar-slot menubutton > button:hover,
+.fkeybar-slot menubutton > button:checked {
+  background-color: var(--om-hover);
+  box-shadow: inset 0 0 0 1px var(--om-hover-line);
+}
+
+.operations-strip {
+  margin: 0 6px;
+}
+
+/* Lines between the panels, above the status line and search field. */
+.panels > .slot + .slot {
+  border-left: 1px solid var(--om-divider);
+}
+
+.panel .search-bar,
+.panel .network-bar {
+  border-top: 1px solid var(--om-divider);
+}
+
+.panel .status-line {
+  padding: 4px 12px 5px 12px;
+  border-top: 1px solid var(--om-divider);
+}
+
+.favourites {
+  border-right: 1px solid var(--om-divider);
+}
+
+/* Path strip: breadcrumbs as flat square buttons; the active panel keeps
+ * its tint and accent line. */
+.path-strip .path-button {
+  min-height: 26px;
+}
+
+/* The "Copied" pill and the drag counter: small squares. */
+.path-strip .copied-pill,
+.drag-count {
+  box-shadow: none;
+  font-size: 10px;
+}
+
+/* Column headers: the small header style, dimmed until hovered. */
+.panel columnview > header > button > box {
+  color: var(--om-dim);
+}
+
+.panel columnview > header > button:hover > box {
+  color: var(--window-fg-color);
+}
+
+.favourites .favourites-title {
+  color: var(--om-dim);
+}
+
+.favourites-bar.keyboard .favourites-title {
+  color: var(--sidebar-fg-color);
+}
+
+/* --- File list ---
+ * Square rows. The structure is style.css's (cursor = the selected row,
+ * marks = filled rows, the inactive panel's cursor grey): the cursor in
+ * the active panel is the accent bar with a line; marked rows a lighter
+ * fill; the inactive panel's cursor the shell's keyboard-cursor state
+ * (8% and a 1px line at 25%). */
+
+.panel columnview > listview > row {
+  border-radius: 0;
+}
+
+.panel columnview > listview > row:selected,
+.panel columnview > listview > row:selected:hover {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bg-color) 60%, transparent);
+}
+
+.panel:not(.active) columnview > listview > row:selected,
+.panel:not(.active) columnview > listview > row:selected:hover {
+  background-color: var(--om-hover);
+  box-shadow: inset 0 0 0 1px var(--om-hover-line);
+}
+
+.panel columnview > listview > row.marked,
+.panel columnview > listview > row.marked:hover {
+  background-color: color-mix(in srgb, var(--mark-color) 18%, transparent);
+}
+
+.panel columnview > listview > row.marked:selected,
+.panel columnview > listview > row.marked:selected:hover {
+  background-color: color-mix(in srgb, var(--mark-color) 42%, transparent);
+}
+
+.panel:not(.active) columnview > listview > row.marked:selected,
+.panel:not(.active) columnview > listview > row.marked:selected:hover {
+  background-color: color-mix(in srgb, var(--mark-color) 26%, transparent);
+}
+
+/* Drop targets keep style.css's ring (these rules come after the cursor's
+ * line, which would otherwise hide it). */
+.panel columnview > listview > row.drop-target,
+.panel columnview > listview > row.drop-target:selected {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--drop-color) 40%, transparent);
+}
+
+/* Favourites: square rows, the shell's states. */
+.favourites row:hover {
+  background-color: var(--om-hover);
+}
+
+.favourites row:selected,
+.favourites row:selected:hover {
+  background-color: var(--om-selected);
+}
+
+/* The error log's text area. */
+.report-text {
+  border-color: var(--om-divider);
+}
+
+/* Progress bars: square (above), a little slimmer track. */
+progressbar > trough {
+  background-color: var(--om-hover);
+}

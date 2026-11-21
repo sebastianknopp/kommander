@@ -9,6 +9,10 @@
 //     window.add_action_entries([copy]);
 //
 // The same action can then also get its F-key as accelerator.
+//
+// At the right end sits an empty slot. In the Omarchy look, which has no
+// top bar, window.rs moves the main menu button and the operations button
+// into it (and back into the header bar in the other looks).
 
 use gtk::prelude::*;
 
@@ -25,12 +29,14 @@ const KEYS: [(&str, &str, &str); 8] = [
     ("F8", "Delete", "delete"),
 ];
 
-pub fn build() -> gtk::Widget {
-    let bar = gtk::Box::builder()
+/// The bar, and the slot at its right end for the header bar's buttons.
+pub fn build() -> (gtk::Widget, gtk::Box) {
+    // The keys share their box evenly; the slot takes only what it needs.
+    let keys = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .homogeneous(true)
+        .hexpand(true)
         .spacing(6)
-        .css_classes(["fkeybar"])
         .build();
 
     for (key, label, action) in KEYS {
@@ -52,7 +58,20 @@ pub fn build() -> gtk::Widget {
             .action_name(format!("win.{action}"))
             .css_classes(["flat"])
             .build();
-        bar.append(&button);
+        keys.append(&button);
     }
-    bar.upcast()
+    let slot = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .css_classes(["fkeybar-slot"])
+        .visible(false)
+        .build();
+    let bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .css_classes(["fkeybar"])
+        .build();
+    bar.append(&keys);
+    bar.append(&slot);
+    (bar.upcast(), slot)
 }

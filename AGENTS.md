@@ -58,6 +58,10 @@ Files:
 - `data/icons/hicolor/` — app icon (scalable) and symbolic icon. Debug builds
   add `data/icons` to the icon theme search path, so `cargo run` shows it.
 - `data/style.css` — all CSS, embedded into the binary at compile time.
+- `data/omarchy.css` — the "Omarchy" look (Omarchy's own app style: square,
+  monospace, flat states from the text colour), also embedded; loaded by
+  `theme.rs` only in that look, on top of `style.css`, so it overrides
+  rather than refactors it.
 
 Module map (`src/`):
 - `main.rs` — app start-up: application ID, CSS, icon. Single instance
@@ -115,7 +119,10 @@ Module map (`src/`):
   as filled rows (the "marked" class on the row, set by `MarkedCells` in
   `panel.rs`; never while the list is building its rows, GTK crashes), and
   a plain click off them drops the marks, as a selection in GNOME Files.
-- `fkeybar.rs` — the function-key bar at the bottom.
+- `fkeybar.rs` — the function-key bar at the bottom, with a slot at its
+  right end that holds the main menu and operations buttons in the
+  Omarchy look (moved there from the header bar by `window.rs`'s
+  `apply_look`, which also hides the top bar).
 - `dialogs.rs` — dialogs of the file operations and the wording of all their
   messages (with tests).
 - `report.rs` — reporting errors: the toast with a Details button, the
@@ -151,16 +158,22 @@ Module map (`src/`):
   out in `window.rs` (`sidebar_key`).
 - `preferences.rs` — the Preferences dialog.
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),
-  including the window's un-maximised size and whether it was maximised
+  including the look (`look=` gnome, omarchy-colours or omarchy; an old
+  file's `colours=` still counts), the window's un-maximised size and whether it was maximised
   (saved on close, not while fullscreen), and `recent-servers` (saved as
   soon as it changes; GLib's string-list escaping done by hand, since the
   Rust binding lacks `set_string_list`).
-- `theme.rs` — colours from the Omarchy theme
+- `theme.rs` — the look (Preferences: GNOME, Omarchy Colours, Omarchy;
+  both Omarchy looks fall back to GNOME without an Omarchy theme). Colours
+  from the Omarchy theme
   (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
   CSS builder) laid over libadwaita's colour variables, followed live by
   watching Omarchy's `current` folder (a theme switch replaces the `theme`
-  folder); and the translucent window (classes on the main window, rules in
-  `style.css`).
+  folder); the Omarchy look's `data/omarchy.css` in a provider of its own
+  (added after `style.css`'s, before the colours', all at application
+  priority, where the later provider wins whatever the selectors); and the
+  translucent window and `omarchy-look` classes on the main window (rules in
+  `style.css` and `omarchy.css`).
 
 ## Conventions
 

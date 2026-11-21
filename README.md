@@ -36,7 +36,7 @@ you switch it, and otherwise stays out of your way.
 - **Type a path** (Ctrl+L) with Tab completion, or type a name to jump to it
 - **Copy a path** with Ctrl+Shift+C or a double-click on the path strip
 - **Slow folders** show a spinner and the time waited; Escape goes back
-- **Omarchy theme** followed live as you switch it, or the plain GNOME look
+- **Omarchy theme** followed live, in GNOME shapes or square and monospace like Omarchy's own apps
 - **Light and dark**, and an optional see-through window
 
 ## Install

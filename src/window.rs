@@ -18,7 +18,7 @@ use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary}
 use crate::menu::{self, Command};
 use crate::panel::{MenuTarget, Panel, entry_file};
 use crate::progress::Operations;
-use crate::settings::{IconSize, Settings, WindowSize};
+use crate::settings::{IconSize, Look, Settings, WindowSize};
 use crate::preview::{self, Preview};
 use crate::sidebar::Sidebar;
 use crate::start::{self, Target};
@@ -57,6 +57,13 @@ struct State {
     asking_quit: Cell<bool>,
     /// Cut, copy and paste of files (Ctrl+X, Ctrl+C, Ctrl+V).
     clipboard: Rc<Clipboard>,
+    /// The top bar and what moves out of it in the Omarchy look (see
+    /// `apply_look`): the header bar, the main menu button, and the slot
+    /// at the right end of the function-key bar.
+    toolbar_view: adw::ToolbarView,
+    header: adw::HeaderBar,
+    menu_button: gtk::MenuButton,
+    fkey_slot: gtk::Box,
 }
 
 impl State {
@@ -75,6 +82,33 @@ impl State {
         if focus {
             self.panels[index].focus();
         }
+    }
+
+    /// The Omarchy look has no top bar, as Omarchy's own apps: the bar is
+    /// hidden and the main menu and operations buttons move to the right
+    /// end of the function-key bar. The other looks put them back. The
+    /// same widgets move (not rebuilt), so their popovers, F10 and the
+    /// progress strip keep working. Called at start-up and whenever the
+    /// shown look changes (theme.rs).
+    fn apply_look(&self, look: Look) {
+        let menu: &gtk::Widget = self.menu_button.upcast_ref();
+        let operations = self.operations.widget();
+        let in_slot = menu.parent().as_ref() == Some(self.fkey_slot.upcast_ref());
+        let omarchy = look == Look::Omarchy;
+        if omarchy && !in_slot {
+            self.header.remove(menu);
+            self.header.remove(operations);
+            self.fkey_slot.append(operations);
+            self.fkey_slot.append(menu);
+        } else if !omarchy && in_slot {
+            self.fkey_slot.remove(menu);
+            self.fkey_slot.remove(operations);
+            // pack_end fills from the right: the menu outermost.
+            self.header.pack_end(menu);
+            self.header.pack_end(operations);
+        }
+        self.fkey_slot.set_visible(omarchy);
+        self.toolbar_view.set_reveal_top_bars(!omarchy);
     }
 
     /// Shows both panels with `size` icons (styling lives in style.css).
@@ -309,6 +343,21 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&main_box));
 
+    // Header bar like GNOME Files: centred title, primary menu on the right,
+    // and left of it the file operations button while copies or moves run
+    // (both packed once the state exists, see below).
+    let menu_button = main_menu_button();
+    let header = adw::HeaderBar::builder()
+        .title_widget(&adw::WindowTitle::new("Kommander", ""))
+        .build();
+    let toolbar_view = adw::ToolbarView::builder()
+        .top_bar_style(adw::ToolbarStyle::Raised)
+        .bottom_bar_style(adw::ToolbarStyle::Raised)
+        .content(&toast_overlay)
+        .build();
+    toolbar_view.add_top_bar(&header);
+    let (fkeybar, fkey_slot) = fkeybar::build();
+
     let state = Rc::new_cyclic(|state_weak: &std::rc::Weak<State>| {
         let on_event = state_weak.clone();
         let on_cancel = state_weak.clone();
@@ -346,6 +395,10 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
                     }
                 }
             }),
+            toolbar_view: toolbar_view.clone(),
+            header: header.clone(),
+            menu_button: menu_button.clone(),
+            fkey_slot,
         }
     });
     state.apply_icon_size(state.settings.borrow().icon_size);
@@ -362,49 +415,19 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
 
     connect_sidebar(&state);
 
-    // Header bar like GNOME Files: centred title, primary menu on the right,
-    // and left of it the file operations button while copies or moves run.
-    let menu = gio::Menu::new();
-    let view_section = gio::Menu::new();
-    let favourites_item = gio::MenuItem::new(Some("Show _Favourites"), Some("win.favourites"));
-    // F1 is caught by the key handler below, not an accelerator; shown anyway.
-    favourites_item.set_attribute_value("accel", Some(&"F1".to_variant()));
-    view_section.append_item(&favourites_item);
-    view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
-    view_section.append(Some("_Reload"), Some("win.reload"));
-    menu.append_section(None, &view_section);
-    let places_section = gio::Menu::new();
-    places_section.append(Some(dialogs::CONNECT_TO_SERVER), Some("win.connect-server"));
-    menu.append_section(None, &places_section);
-    let app_section = gio::Menu::new();
-    app_section.append(Some("_Preferences"), Some("app.preferences"));
-    app_section.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
-    app_section.append(Some("Show _Error Log"), Some("app.error-log"));
-    app_section.append(Some("_About Kommander"), Some("app.about"));
-    menu.append_section(None, &app_section);
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .menu_model(&menu)
-        .primary(true)
-        .tooltip_text("Main Menu")
-        .build();
-
-    let header = adw::HeaderBar::builder()
-        .title_widget(&adw::WindowTitle::new("Kommander", ""))
-        .build();
     header.pack_end(&menu_button);
     header.pack_end(state.operations.widget());
-
-    let toolbar_view = adw::ToolbarView::builder()
-        .top_bar_style(adw::ToolbarStyle::Raised)
-        .bottom_bar_style(adw::ToolbarStyle::Raised)
-        .content(&toast_overlay)
-        .build();
-    toolbar_view.add_top_bar(&header);
     // While copies or moves run, a slim progress strip directly above the
     // function-key bar.
     toolbar_view.add_bottom_bar(state.operations.strip());
-    toolbar_view.add_bottom_bar(&fkeybar::build());
+    toolbar_view.add_bottom_bar(&fkeybar);
+    state.apply_look(theme::shown_look());
+    let state_weak = Rc::downgrade(&state);
+    theme::connect_look_shown(move |look| {
+        if let Some(state) = state_weak.upgrade() {
+            state.apply_look(look);
+        }
+    });
 
     // The size it had when last closed (see `remember_size`).
     let size = state.settings.borrow().window;
@@ -890,6 +913,35 @@ fn connect_sidebar(state: &Rc<State>) {
     });
 }
 
+/// The primary menu's button (header bar, or function-key bar in the
+/// Omarchy look).
+fn main_menu_button() -> gtk::MenuButton {
+    let menu = gio::Menu::new();
+    let view_section = gio::Menu::new();
+    let favourites_item = gio::MenuItem::new(Some("Show _Favourites"), Some("win.favourites"));
+    // F1 is caught by the window's key handler, not an accelerator; shown anyway.
+    favourites_item.set_attribute_value("accel", Some(&"F1".to_variant()));
+    view_section.append_item(&favourites_item);
+    view_section.append(Some("Show _Hidden Files"), Some("win.show-hidden"));
+    view_section.append(Some("_Reload"), Some("win.reload"));
+    menu.append_section(None, &view_section);
+    let places_section = gio::Menu::new();
+    places_section.append(Some(dialogs::CONNECT_TO_SERVER), Some("win.connect-server"));
+    menu.append_section(None, &places_section);
+    let app_section = gio::Menu::new();
+    app_section.append(Some("_Preferences"), Some("app.preferences"));
+    app_section.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
+    app_section.append(Some("Show _Error Log"), Some("app.error-log"));
+    app_section.append(Some("_About Kommander"), Some("app.about"));
+    menu.append_section(None, &app_section);
+    gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .menu_model(&menu)
+        .primary(true)
+        .tooltip_text("Main Menu")
+        .build()
+}
+
 /// The primary menu's actions. They belong to the application (GNOME
 /// convention) and act on this window, the only one.
 fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, state: &Rc<State>) {
@@ -902,7 +954,7 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
             };
             let for_icons = Rc::downgrade(&state);
             let for_preview = Rc::downgrade(&state);
-            let for_colours = Rc::downgrade(&state);
+            let for_look = Rc::downgrade(&state);
             let for_translucent = Rc::downgrade(&state);
             preferences::present(
                 &window,
@@ -923,10 +975,11 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
                         state.settings.borrow().save();
                     }
                 },
-                move |colours| {
-                    theme::set_colours(colours);
-                    if let Some(state) = for_colours.upgrade() {
-                        state.settings.borrow_mut().colours = colours;
+                move |look| {
+                    // theme.rs then calls back `apply_look` (top bar).
+                    theme::set_look(look);
+                    if let Some(state) = for_look.upgrade() {
+                        state.settings.borrow_mut().look = look;
                         state.settings.borrow().save();
                     }
                 },

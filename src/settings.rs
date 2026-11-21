@@ -71,29 +71,42 @@ pub struct Sort {
     pub descending: bool,
 }
 
-/// Where the app's colours come from.
+/// The app's look (Preferences): plain GNOME, GNOME shapes in the Omarchy
+/// theme's colours, or Omarchy's own app style (square, monospace, no top
+/// bar; theme.rs and data/omarchy.css). Both Omarchy looks follow the
+/// desktop theme live; without one they fall back to GNOME (theme.rs).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Colours {
-    /// The Omarchy desktop theme, followed live (plain libadwaita on a
-    /// computer without Omarchy, see theme.rs).
-    #[default]
-    Omarchy,
-    /// Plain libadwaita, as in GNOME.
+pub enum Look {
     Gnome,
+    #[default]
+    OmarchyColours,
+    Omarchy,
 }
 
-impl Colours {
+impl Look {
     pub fn as_str(self) -> &'static str {
         match self {
-            Colours::Omarchy => "omarchy",
-            Colours::Gnome => "gnome",
+            Look::Gnome => "gnome",
+            Look::OmarchyColours => "omarchy-colours",
+            Look::Omarchy => "omarchy",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "omarchy" => Some(Colours::Omarchy),
-            "gnome" => Some(Colours::Gnome),
+            "gnome" => Some(Look::Gnome),
+            "omarchy-colours" => Some(Look::OmarchyColours),
+            "omarchy" => Some(Look::Omarchy),
+            _ => None,
+        }
+    }
+
+    /// The old `colours=` key (before there were three looks):
+    /// "omarchy" meant the theme's colours on GNOME shapes.
+    fn parse_old_colours(value: &str) -> Option<Self> {
+        match value {
+            "omarchy" => Some(Look::OmarchyColours),
+            "gnome" => Some(Look::Gnome),
             _ => None,
         }
     }
@@ -145,7 +158,7 @@ pub struct Settings {
     pub preview_in_window: bool,
     /// The favourites sidebar (F1) is shown.
     pub show_favourites: bool,
-    pub colours: Colours,
+    pub look: Look,
     /// The window's backgrounds are slightly see-through.
     pub translucent: bool,
     pub window: WindowSize,
@@ -211,9 +224,11 @@ impl Settings {
             preview_in_window: boolean("preview-in-window")
                 .unwrap_or(defaults.preview_in_window),
             show_favourites: boolean("show-favourites").unwrap_or(defaults.show_favourites),
-            colours: string("colours")
-                .and_then(|v| Colours::parse(&v))
-                .unwrap_or(defaults.colours),
+            // Files from before the three looks only have `colours=`.
+            look: string("look")
+                .and_then(|v| Look::parse(&v))
+                .or_else(|| string("colours").and_then(|v| Look::parse_old_colours(&v)))
+                .unwrap_or(defaults.look),
             translucent: boolean("translucent-window").unwrap_or(defaults.translucent),
             window: WindowSize::checked(
                 integer("window-width").unwrap_or(0),
@@ -235,7 +250,7 @@ impl Settings {
         file.set_boolean(GROUP, "show-hidden", self.show_hidden);
         file.set_boolean(GROUP, "preview-in-window", self.preview_in_window);
         file.set_boolean(GROUP, "show-favourites", self.show_favourites);
-        file.set_string(GROUP, "colours", self.colours.as_str());
+        file.set_string(GROUP, "look", self.look.as_str());
         file.set_boolean(GROUP, "translucent-window", self.translucent);
         file.set_integer(GROUP, "window-width", self.window.width);
         file.set_integer(GROUP, "window-height", self.window.height);
@@ -303,7 +318,7 @@ mod tests {
             folders: [Some("file:///tmp/a%20b".into()), None],
             preview_in_window: true,
             show_favourites: true,
-            colours: Colours::Gnome,
+            look: Look::Omarchy,
             translucent: true,
             window: WindowSize { width: 1600, height: 900, maximized: true },
             // A ";" (the list separator), "\", spaces and accents must survive too.
@@ -326,12 +341,37 @@ mod tests {
         let file = glib::KeyFile::new();
         file.load_from_data(
             "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n\
-             colours=purple\ntranslucent-window=yes\nwindow-width=wide\nwindow-height=-5\n\
+             look=purple\ncolours=pink\ntranslucent-window=yes\nwindow-width=wide\nwindow-height=-5\n\
              window-maximized=very\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();
         assert_eq!(Settings::from_key_file(&file), Settings::default());
+    }
+
+    #[test]
+    fn every_look_survives_a_round_trip() {
+        for look in [Look::Gnome, Look::OmarchyColours, Look::Omarchy] {
+            let settings = Settings { look, ..Settings::default() };
+            let file = glib::KeyFile::new();
+            file.load_from_data(&settings.to_key_file().to_data(), glib::KeyFileFlags::NONE).unwrap();
+            assert_eq!(Settings::from_key_file(&file).look, look);
+        }
+        assert_eq!(Settings::default().look, Look::OmarchyColours);
+    }
+
+    #[test]
+    fn old_colours_key_still_counts() {
+        let look = |text: &str| {
+            let file = glib::KeyFile::new();
+            file.load_from_data(text, glib::KeyFileFlags::NONE).unwrap();
+            Settings::from_key_file(&file).look
+        };
+        assert_eq!(look("[Kommander]\ncolours=gnome\n"), Look::Gnome);
+        assert_eq!(look("[Kommander]\ncolours=omarchy\n"), Look::OmarchyColours);
+        // The new key wins; a broken new value falls back to the old key.
+        assert_eq!(look("[Kommander]\ncolours=gnome\nlook=omarchy\n"), Look::Omarchy);
+        assert_eq!(look("[Kommander]\ncolours=gnome\nlook=shiny\n"), Look::Gnome);
     }
 
     #[test]

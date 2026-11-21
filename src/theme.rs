@@ -1,5 +1,5 @@
-// Colours from the Omarchy desktop theme, followed live, and the optional
-// translucent window.
+// The look: colours from the Omarchy desktop theme, followed live, the
+// Omarchy app style (data/omarchy.css), and the optional translucent window.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Omarchy keeps the current theme in ~/.local/state/omarchy/current/theme/
@@ -21,6 +21,15 @@
 // The translucent window is plain CSS in data/style.css, switched on by the
 // "translucent" class on the main window (which gets the "main-window" class
 // from here, so the rules never reach dialogs or popovers).
+//
+// The "Omarchy" look (settings::Look) is the theme's colours plus the shapes
+// and fonts of Omarchy's own shell and apps: data/omarchy.css, in a provider
+// of its own that is filled or emptied like the colours (a stylesheet rather
+// than a window class, so it also reaches menus, dialogs and tooltips). The
+// main window also gets the "omarchy-look" class for the few rules meant
+// only for it. Moving the menu button out of the hidden top bar is
+// window.rs's part. Without an Omarchy theme both Omarchy looks fall back
+// to GNOME, as Preferences shows.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -32,7 +41,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::settings::{Colours, Settings};
+use crate::settings::{Look, Settings};
 
 /// How long to wait after the last change in the theme folder before
 /// reading the colours: a switch changes several files in a row.
@@ -255,10 +264,17 @@ pub fn css(palette: &Palette) -> String {
 
 // --- Applying and watching ---
 
+type LookListener = Rc<dyn Fn(Look)>;
+
 struct Theme {
     /// Holds the theme's stylesheet, or nothing for plain libadwaita.
     provider: gtk::CssProvider,
-    colours: Cell<Colours>,
+    /// Holds data/omarchy.css in the Omarchy look, otherwise nothing.
+    shapes: gtk::CssProvider,
+    look: Cell<Look>,
+    /// Told the shown look whenever it is applied (window.rs moves the
+    /// menu button with it).
+    on_look: RefCell<Option<LookListener>>,
     /// The stylesheet for the current Omarchy theme ("" when there is none).
     theme_css: RefCell<String>,
     translucent: Cell<bool>,
@@ -285,14 +301,23 @@ pub fn start(app: &adw::Application, settings: &Settings) {
     let Some(display) = gdk::Display::default() else { return };
     let theme = Rc::new(Theme {
         provider: gtk::CssProvider::new(),
-        colours: Cell::new(settings.colours),
+        shapes: gtk::CssProvider::new(),
+        look: Cell::new(settings.look),
+        on_look: RefCell::default(),
         theme_css: RefCell::default(),
         translucent: Cell::new(settings.translucent),
         monitor: RefCell::default(),
         pending: RefCell::default(),
     });
-    // Above data/style.css (also "application" priority, added earlier), so
-    // our :root wins over libadwaita's; below the user's own gtk.css.
+    // All three at "application" priority, where the one added last wins:
+    // data/style.css (added earlier, in main.rs), then the Omarchy look's
+    // shapes overriding it, then the colours, so their :root wins over
+    // libadwaita's and anything else. Below the user's own gtk.css.
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &theme.shapes,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
     gtk::style_context_add_provider_for_display(
         &display,
         &theme.provider,
@@ -309,7 +334,7 @@ pub fn start(app: &adw::Application, settings: &Settings) {
     app.connect_window_added(|_, window| {
         if window.is::<adw::ApplicationWindow>() {
             window.add_css_class("main-window");
-            with_theme(|theme| theme.apply_translucency());
+            with_theme(|theme| theme.apply_window_classes());
         }
     });
     THEME.with(|cell| {
@@ -317,38 +342,66 @@ pub fn start(app: &adw::Application, settings: &Settings) {
     });
 }
 
-/// Switches between the Omarchy theme's colours and plain libadwaita.
-pub fn set_colours(colours: Colours) {
+/// Switches the look (see the header comment).
+pub fn set_look(look: Look) {
     with_theme(|theme| {
-        theme.colours.set(colours);
+        theme.look.set(look);
         theme.apply();
     });
+}
+
+/// Calls `f` with the shown look whenever it is applied: after a change in
+/// Preferences, and when a theme appears or goes away.
+pub fn connect_look_shown(f: impl Fn(Look) + 'static) {
+    with_theme(|theme| *theme.on_look.borrow_mut() = Some(Rc::new(f)));
+}
+
+/// The look actually shown: the chosen one, or GNOME when there is no
+/// Omarchy theme to follow.
+pub fn shown_look() -> Look {
+    THEME.with(|cell| cell.get().map_or(Look::Gnome, |theme| theme.shown_look()))
 }
 
 /// Makes the main window's backgrounds slightly see-through, or solid.
 pub fn set_translucent(translucent: bool) {
     with_theme(|theme| {
         theme.translucent.set(translucent);
-        theme.apply_translucency();
+        theme.apply_window_classes();
     });
 }
 
 impl Theme {
-    fn apply(&self) {
-        let css = match self.colours.get() {
-            Colours::Omarchy => self.theme_css.borrow().clone(),
-            Colours::Gnome => String::new(),
-        };
-        self.provider.load_from_string(&css);
+    fn shown_look(&self) -> Look {
+        if self.theme_css.borrow().is_empty() { Look::Gnome } else { self.look.get() }
     }
 
-    fn apply_translucency(&self) {
+    fn apply(&self) {
+        let look = self.shown_look();
+        let colours = match look {
+            Look::OmarchyColours | Look::Omarchy => self.theme_css.borrow().clone(),
+            Look::Gnome => String::new(),
+        };
+        self.provider.load_from_string(&colours);
+        let shapes = if look == Look::Omarchy { include_str!("../data/omarchy.css") } else { "" };
+        self.shapes.load_from_string(shapes);
+        self.apply_window_classes();
+        let listener = self.on_look.borrow().clone();
+        if let Some(listener) = listener {
+            listener(look);
+        }
+    }
+
+    /// The main window's "translucent" and "omarchy-look" classes.
+    fn apply_window_classes(&self) {
+        let omarchy = self.shown_look() == Look::Omarchy;
         for window in gtk::Window::list_toplevels() {
             if window.has_css_class("main-window") {
-                if self.translucent.get() {
-                    window.add_css_class("translucent");
-                } else {
-                    window.remove_css_class("translucent");
+                for (class, on) in [("translucent", self.translucent.get()), ("omarchy-look", omarchy)] {
+                    if on {
+                        window.add_css_class(class);
+                    } else {
+                        window.remove_css_class(class);
+                    }
                 }
             }
         }
