@@ -2095,6 +2095,10 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
         "Hold while clicking a file to mark or unmark it",
         "<Control>",
     ));
+    marking.add(adw::ShortcutsItem::new(
+        "Hold while clicking to mark from the cursor to that file",
+        "<Shift>",
+    ));
 
     let files = adw::ShortcutsSection::new(Some("Files"));
     files.add(adw::ShortcutsItem::new("Rename the file under the cursor", "F2"));

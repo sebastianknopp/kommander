@@ -504,10 +504,12 @@ impl Panel {
             }
         });
 
-        // Ctrl+click toggles a row's mark without moving the cursor. Caught
-        // before the row sees the click, so the row's own click (which would
-        // move the cursor) is cancelled. The mark changes on release, so
-        // that Ctrl held while starting a drag changes no marks.
+        // Ctrl+click toggles a row's mark without moving the cursor;
+        // Shift+click marks everything from the cursor's row to the clicked
+        // one and takes the cursor there (as in GNOME Files, only that it
+        // adds to the marks). Caught before the row sees the click, so the
+        // row's own click is cancelled. The marks change on release, so
+        // that Ctrl or Shift held while starting a drag changes no marks.
         let ctrl_click = gtk::GestureClick::new();
         ctrl_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let ctrl_clicked = Rc::new(Cell::new(None));
@@ -518,18 +520,25 @@ impl Panel {
             let Some(panel) = weak.upgrade() else {
                 return;
             };
-            if !gesture.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+            let held = gesture.current_event_state();
+            let range = if held.contains(gdk::ModifierType::CONTROL_MASK) {
+                false
+            } else if held.contains(gdk::ModifierType::SHIFT_MASK) {
+                true
+            } else {
                 return;
-            }
+            };
             if let Some((position, _)) = panel.row_at(x, y) {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                pressed.set(Some(position));
+                pressed.set(Some((position, range)));
             }
         });
         let weak = Rc::downgrade(self);
         ctrl_click.connect_released(move |_, _, _, _| {
-            if let (Some(panel), Some(position)) = (weak.upgrade(), ctrl_clicked.take()) {
-                panel.toggle_mark(position);
+            match (weak.upgrade(), ctrl_clicked.take()) {
+                (Some(panel), Some((position, true))) => panel.mark_to(position),
+                (Some(panel), Some((position, false))) => panel.toggle_mark(position),
+                _ => {}
             }
         });
         self.column_view.add_controller(ctrl_click.clone());
@@ -823,6 +832,22 @@ impl Panel {
         };
         self.marked.marks.borrow_mut().toggle(&uri);
         self.marked.show_all();
+        self.update_status();
+    }
+
+    /// Shift+click on row `position`: marks every file from the cursor's
+    /// row to that row, on top of what is marked already, and moves the
+    /// cursor there (taking the keyboard, as a plain click would). ".." is
+    /// never marked.
+    fn mark_to(&self, position: u32) {
+        let cursor = self.selection.selected();
+        let from = if cursor == gtk::INVALID_LIST_POSITION { position } else { cursor };
+        let (first, last) = range_between(from, position);
+        self.marked.marks.borrow_mut().mark_all(
+            (first..=last).filter_map(|i| self.entry(i)).filter_map(|info| entry_uri(&info)),
+        );
+        self.marked.show_all();
+        select_row(&self.column_view, position, true);
         self.update_status();
     }
 
@@ -1908,6 +1933,12 @@ impl Panel {
 
 /// Moves the cursor to row `position`, also taking the keyboard focus there
 /// with `focus`.
+/// The first and last row of the range between rows `a` and `b`, whichever
+/// comes first.
+fn range_between(a: u32, b: u32) -> (u32, u32) {
+    (a.min(b), a.max(b))
+}
+
 fn select_row(column_view: &gtk::ColumnView, position: u32, focus: bool) {
     let mut flags = gtk::ListScrollFlags::SELECT;
     if focus {
@@ -2626,6 +2657,13 @@ mod tests {
             sorted(list(), compare_modified, false),
             ["alpha", "Zeta", "file10", "big", "file2"]
         );
+    }
+
+    #[test]
+    fn a_range_runs_either_way() {
+        assert_eq!(range_between(2, 5), (2, 5));
+        assert_eq!(range_between(5, 2), (2, 5));
+        assert_eq!(range_between(3, 3), (3, 3));
     }
 
     #[test]
