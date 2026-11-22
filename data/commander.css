@@ -412,3 +412,31 @@ dialog.alert.destructive-question {
   --om-divider: color-mix(in srgb, var(--nc-danger-fg) 30%, transparent);
   --om-card-line: var(--nc-danger-fg);
 }
+
+/* In a question the filled button is the one Enter presses, and only that
+ * one: as in Norton Commander, the fill is the cursor. The others are all
+ * quiet, the one that deletes too (the red question says what is at stake);
+ * otherwise a filled "Delete" beside a focused "Cancel" reads as selected. */
+dialog.alert .response-area > button,
+dialog.alert .response-area > button.suggested-action,
+dialog.alert .response-area > button.destructive-action {
+  background-color: var(--om-rest);
+  color: var(--dialog-fg-color);
+  box-shadow: none;
+}
+
+dialog.alert .response-area > button:hover,
+dialog.alert .response-area > button.suggested-action:hover,
+dialog.alert .response-area > button.destructive-action:hover {
+  background-color: var(--om-hover);
+  color: var(--dialog-fg-color);
+}
+
+dialog.alert .response-area > button:focus,
+dialog.alert .response-area > button.suggested-action:focus,
+dialog.alert .response-area > button.destructive-action:focus {
+  outline: none;
+  background-color: var(--dialog-fg-color);
+  color: var(--dialog-bg-color);
+  box-shadow: none;
+}
