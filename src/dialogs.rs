@@ -508,8 +508,8 @@ pub const EDITOR_NOT_FLOATED: &str = "Could not float the editor’s window";
 /// Preferences: the editor group.
 pub const EDITOR_GROUP: &str = "Editor";
 pub const EDITOR_GROUP_HINT: &str =
-    "F4 opens the file in the system’s text editor, or with a command of your own. \
-     Example: subl --new-window";
+    "F4 opens the file in the system’s text editor. A command of your own replaces it \
+     (subl --new-window); switches alone are added to the system’s editor (--new-window).";
 pub const EDITOR_COMMAND_TITLE: &str = "Editor Command";
 pub const EDITOR_FLOATS_TITLE: &str = "Floating Editor Window";
 pub const EDITOR_FLOATS_HINT: &str = "A new editor window opens in the middle of the screen";

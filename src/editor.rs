@@ -48,6 +48,12 @@ pub fn argv_for(command: &str, path: &str) -> Result<Vec<String>, glib::Error> {
     Ok(argv)
 }
 
+/// Whether a command line names no program, only switches: its first
+/// word starts with a dash.
+pub fn only_switches(argv: &[String]) -> bool {
+    argv.first().is_some_and(|word| word.starts_with('-'))
+}
+
 /// The address of the window a line of Hyprland's event socket says was
 /// opened ("openwindow>>55d0c8a3b2f0,2,sublime_text,notes.txt").
 pub fn opened_window(line: &str) -> Option<&str> {
@@ -129,13 +135,19 @@ fn start_command(widget: &gtk::Widget, name: &str, file: &gio::File, command: &s
             .error(error);
         report::show(widget, problem);
     };
-    let argv = match argv_for(command, &path) {
+    let mut argv = match argv_for(command, &path) {
         Ok(argv) => argv,
         Err(error) => {
             problem(&error);
             return false;
         }
     };
+    // Only switches ("--new-window"): meant for the system's editor.
+    if only_switches(&argv)
+        && let Some(program) = gio::AppInfo::default_for_type("text/plain", false).and_then(|editor| editor.executable())
+    {
+        argv.insert(0, program.to_string_lossy().into_owned());
+    }
     let words: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
     match gio::Subprocess::newv(&words, gio::SubprocessFlags::NONE) {
         Ok(_) => {
@@ -274,6 +286,14 @@ mod tests {
             argv_for("'/opt/My Editor/run' --title \"Quick edit\"", "/a").unwrap(),
             ["/opt/My Editor/run", "--title", "Quick edit", "/a"]
         );
+    }
+
+    #[test]
+    fn a_command_of_switches_only_is_told_apart() {
+        assert!(only_switches(&argv_for("--new-window", "/a").unwrap()));
+        assert!(only_switches(&argv_for("-n -w", "/a").unwrap()));
+        assert!(!only_switches(&argv_for("subl --new-window", "/a").unwrap()));
+        assert!(!only_switches(&[]));
     }
 
     #[test]

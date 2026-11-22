@@ -179,7 +179,7 @@ Module map (`src/`):
   `%f` or the end takes the file's path; tested). On Hyprland, with
   `editor-floats=` (default on), it listens on Hyprland's event socket
   for the next window to open and has it floated, sized and centred
-  through `hyprctl eval` (Hyprland's Lua; the old `--batch` dispatchers
+  through `hyprctl eval`; a command of switches only ("--new-window") is added to the system editor; (Hyprland's Lua; the old `--batch` dispatchers
   as a fallback, untested). Not the process started is followed but the
   next window, because editors like Sublime hand the file to a running
   copy.
