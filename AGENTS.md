@@ -83,7 +83,8 @@ Module map (`src/`):
   window (the `win.open-argument` action, looked up without blocking).
 - `window.rs` — main window, header bar, menus, all actions and key
   bindings, the shortcuts and About dialogs; wires panels, sidebar,
-  preview and jobs. Single-panel mode (`win.single-panel`, Ctrl+1 one
+  preview and jobs. Left and Right step across the window (favourites,
+  left panel, right panel; Tab still switches panels). Single-panel mode (`win.single-panel`, Ctrl+1 one
   panel / Ctrl+2 both, caught in the key handler; a check item in the main
   menu): the inactive slot is hidden but its panel lives on, `activate`
   (Tab) shows the other one instead (`show_slots`, always before the

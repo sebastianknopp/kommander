@@ -803,6 +803,27 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             window_state.close_preview();
             return glib::Propagation::Stop;
         }
+        // Left and Right step across the window: favourites, left panel,
+        // right panel (the keys do nothing else in a file list).
+        match key {
+            gdk::Key::Left | gdk::Key::KP_Left if active == 1 => {
+                window_state.activate(0, true);
+                return glib::Propagation::Stop;
+            }
+            gdk::Key::Left | gdk::Key::KP_Left => {
+                if window_state.settings.borrow().show_favourites {
+                    window_state.sidebar.focus_in();
+                }
+                return glib::Propagation::Stop;
+            }
+            gdk::Key::Right | gdk::Key::KP_Right => {
+                if active == 0 {
+                    window_state.activate(1, true);
+                }
+                return glib::Propagation::Stop;
+            }
+            _ => {}
+        }
         // At the top or bottom of the list the cursor comes out on the other
         // side; everywhere else the list moves it itself.
         if !modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -905,7 +926,8 @@ fn any_modifier() -> gdk::ModifierType {
 }
 
 /// A key pressed while the focus is in the favourites sidebar. Up, Down,
-/// Home, End and Enter go to the list itself; Escape and Tab go back to the panel; Delete
+/// Home, End and Enter go to the list itself; Escape and Tab go back to the panel,
+/// Right steps to the panel beside it; Delete
 /// removes a favourite. The panel's own keys are swallowed, so that they
 /// can't act on files the user doesn't see the cursor on.
 fn sidebar_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
@@ -916,6 +938,16 @@ fn sidebar_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> gl
     let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
     match key {
         Key::Tab | Key::ISO_Left_Tab | Key::KP_Tab | Key::Escape if !ctrl_alt => state.focus_panel(),
+        // Right steps to the panel beside the sidebar, the left one (with
+        // one panel shown, to that one); Left has nowhere to go.
+        Key::Right | Key::KP_Right if !ctrl_alt => {
+            if state.single.get() {
+                state.focus_panel();
+            } else {
+                state.activate(0, true);
+            }
+        }
+        Key::Left | Key::KP_Left if !ctrl_alt => {}
         Key::Delete | Key::KP_Delete if !ctrl_alt && !shift => state.sidebar.remove_focused(),
         Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6 | Key::F7 | Key::F8 => {}
         Key::Delete | Key::KP_Delete | Key::Insert | Key::KP_Insert | Key::BackSpace => {}
@@ -2284,6 +2316,7 @@ fn find_label(root: &gtk::Widget, text: &str) -> Option<gtk::Label> {
 fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let panels = adw::ShortcutsSection::new(Some("Panels"));
     panels.add(adw::ShortcutsItem::new("Switch to the other panel", "Tab"));
+    panels.add(adw::ShortcutsItem::new("Step to the panel or favourites beside", "Left Right"));
     panels.add(adw::ShortcutsItem::new(dialogs::SHORTCUT_ONE_PANEL, "<Control>1"));
     panels.add(adw::ShortcutsItem::new(dialogs::SHORTCUT_TWO_PANELS, "<Control>2"));
     panels.add(adw::ShortcutsItem::new("Move the cursor", "Up Down"));
