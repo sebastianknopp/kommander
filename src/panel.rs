@@ -204,10 +204,26 @@ impl Panel {
         };
         column_view.sort_by_column(Some(&columns[sort.column as usize]), order);
 
+        // "External": the list's own minimum width does not hold the panel
+        // (and so the window) wide; in a narrow panel the detail columns
+        // go instead, so the names keep their room.
         let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::External)
             .child(&column_view)
             .build();
+        let detail_columns = [columns[1].clone(), columns[2].clone()];
+        scrolled.hadjustment().connect_page_size_notify(move |adjustment| {
+            let shown = detail_columns_for(adjustment.page_size() as i32);
+            // Not while the list is being given its size.
+            let columns = detail_columns.clone();
+            glib::idle_add_local_once(move || {
+                for (column, shown) in columns.iter().zip(shown) {
+                    if column.is_visible() != shown {
+                        column.set_visible(shown);
+                    }
+                }
+            });
+        });
 
         // In the empty Network list, a hint over the list; under the
         // Network list, a slim strip with "Connect to Server…" (see network.rs).
@@ -2530,6 +2546,18 @@ fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     column
 }
 
+/// The widths of the Size and Modified columns.
+const SIZE_WIDTH: i32 = 84;
+const MODIFIED_WIDTH: i32 = 104;
+/// The room the Name column keeps before a detail column may show.
+const NAME_ROOM: i32 = 200;
+
+/// Whether the Size and the Modified column are shown in a list `width`
+/// pixels wide: Modified goes first, then Size; the names go last.
+fn detail_columns_for(width: i32) -> [bool; 2] {
+    [width >= NAME_ROOM + SIZE_WIDTH, width >= NAME_ROOM + SIZE_WIDTH + MODIFIED_WIDTH]
+}
+
 fn size_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     let column = column(
         "Size",
@@ -2545,7 +2573,7 @@ fn size_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
             cell.downcast_ref::<gtk::Label>().unwrap().set_label(&text);
         },
     );
-    column.set_fixed_width(84);
+    column.set_fixed_width(SIZE_WIDTH);
     column
 }
 
@@ -2565,7 +2593,7 @@ fn modified_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
             cell.downcast_ref::<gtk::Label>().unwrap().set_label(&text);
         },
     );
-    column.set_fixed_width(104);
+    column.set_fixed_width(MODIFIED_WIDTH);
     column
 }
 
@@ -2604,6 +2632,16 @@ fn format_date(date: &glib::DateTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_narrow_list_drops_modified_then_size_and_keeps_the_names() {
+        assert_eq!(detail_columns_for(600), [true, true]);
+        assert_eq!(detail_columns_for(388), [true, true]);
+        assert_eq!(detail_columns_for(387), [true, false]);
+        assert_eq!(detail_columns_for(284), [true, false]);
+        assert_eq!(detail_columns_for(283), [false, false]);
+        assert_eq!(detail_columns_for(0), [false, false]);
+    }
 
     fn names(list: &[&str]) -> Vec<Option<String>> {
         list.iter().map(|s| Some(s.to_string())).collect()

@@ -87,6 +87,10 @@ Module map (`src/`):
   or F3 closes, Tab flips).
 - `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
+  The list's minimum width does not hold the window wide (its scrolled
+  window's horizontal policy is "external"); a narrow list drops the
+  Modified column, then Size, so the names keep their room
+  (`detail_columns_for`, tested).
   Going to a folder keeps the old one on screen until the new one is read,
   then swaps in one step (`travel`, `commit`). A folder not read within
   300 ms puts the panel into "waiting" (`show_waiting`): the path strip

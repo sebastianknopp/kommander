@@ -101,6 +101,20 @@ button:focus:focus-visible {
   box-shadow: inset 0 0 0 1px var(--om-hover-line);
 }
 
+/* In a question's buttons the focused one is what Enter presses, so it
+ * always shows, and clearly: a full-strength line, on a filled button a
+ * second one inside the fill. */
+dialog.alert .response-area > button:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--window-fg-color);
+}
+
+dialog.alert .response-area > button.suggested-action:focus,
+dialog.alert .response-area > button.destructive-action:focus {
+  box-shadow: inset 0 0 0 1px var(--accent-bg-color),
+              inset 0 0 0 3px var(--accent-fg-color);
+}
+
 /* Suggested and destructive buttons keep their colour (a destructive
  * one's accent is libadwaita's red). */
 button.suggested-action,
@@ -110,6 +124,7 @@ button.destructive-action,
 button.destructive-action:hover,
 button.destructive-action:active {
   background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
 }
 
 /* The current folder's breadcrumb and the column headers are not buttons
