@@ -2548,7 +2548,8 @@ fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
 
 /// The widths of the Size and Modified columns.
 const SIZE_WIDTH: i32 = 84;
-const MODIFIED_WIDTH: i32 = 104;
+// Room for "Yesterday 14:05", the longest, also in the monospace look.
+const MODIFIED_WIDTH: i32 = 132;
 /// The room the Name column keeps before a detail column may show.
 const NAME_ROOM: i32 = 200;
 
@@ -2606,7 +2607,8 @@ fn detail_label(xalign: f32) -> gtk::Widget {
         .upcast()
 }
 
-/// Short date like Nautilus: "14:05" today, "Yesterday", "3 Nov", "3 Nov 2023".
+/// Short date like Nautilus: "14:05" today, "3 Nov", "3 Nov 2023";
+/// yesterday with its time ("Yesterday 14:05"), which Nautilus leaves out.
 fn format_date(date: &glib::DateTime) -> String {
     let Ok(now) = glib::DateTime::now_local() else {
         return String::new();
@@ -2620,7 +2622,7 @@ fn format_date(date: &glib::DateTime) -> String {
         .add_days(-1)
         .is_ok_and(|yesterday| same_day(&date, &yesterday))
     {
-        return "Yesterday".into();
+        return date.format("Yesterday %H:%M").map(Into::into).unwrap_or_default();
     } else if date.year() == now.year() {
         "%-e %b"
     } else {
@@ -2636,8 +2638,8 @@ mod tests {
     #[test]
     fn a_narrow_list_drops_modified_then_size_and_keeps_the_names() {
         assert_eq!(detail_columns_for(600), [true, true]);
-        assert_eq!(detail_columns_for(388), [true, true]);
-        assert_eq!(detail_columns_for(387), [true, false]);
+        assert_eq!(detail_columns_for(416), [true, true]);
+        assert_eq!(detail_columns_for(415), [true, false]);
         assert_eq!(detail_columns_for(284), [true, false]);
         assert_eq!(detail_columns_for(283), [false, false]);
         assert_eq!(detail_columns_for(0), [false, false]);
