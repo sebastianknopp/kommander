@@ -63,8 +63,8 @@ Files:
   `theme.rs` only in that look, on top of `style.css`, so it overrides
   rather than refactors it.
 - `data/commander.css` — the "Commander" look (a modern homage to Norton
-  Commander: line frames with the path set into the top edge, column
-  lines, cyan cursor bar, amber marks as text, F-keys as number + cyan
+  Commander: calm, no frames, the path centred above each list as an
+  inverse block in the active panel, cyan cursor bar, amber marks as text, F-keys as number + cyan
   block, cyan menus, grey questions, red ones for what cannot be undone),
   also embedded; loaded only in that look, after `omarchy.css` in the same
   provider. Variables only (its palette comes from `theme.rs`). The
@@ -223,7 +223,7 @@ Module map (`src/`):
   forced through `adw::StyleManager` while it is shown (the earlier choice
   given back after), and both `omarchy-look` and `commander-look` on the
   main window. `window.rs`'s `apply_look` treats it like the Omarchy look
-  and passes it on: bare F-key numbers, titles centred in the frames
+  and passes it on: bare F-key numbers, titles centred above their lists
   (`PathBar::set_centred`, `Sidebar`/`Preview::set_title_centred`), and
   the Size column's "►UP◄"/"►DIR◄" (`Panel::set_look`).
 
