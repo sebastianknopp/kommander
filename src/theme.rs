@@ -394,6 +394,31 @@ pub fn commander_css() -> String {
     out
 }
 
+/// The icon theme of the Commander look: yellow folders, as far as the
+/// original had any colour for them. Omarchy ships it with its Yaru set.
+const COMMANDER_ICONS: &str = "Yaru-yellow";
+
+/// In the Commander look the icons come from `COMMANDER_ICONS` (for this
+/// app only, and only where that theme is installed: a missing one would
+/// lose the icons); otherwise from the system's theme again, followed live.
+fn commander_icons(on: bool) {
+    let (Some(settings), Some(display)) = (gtk::Settings::default(), gtk::gdk::Display::default()) else {
+        return;
+    };
+    if !on {
+        settings.reset_property("gtk-icon-theme-name");
+        return;
+    }
+    // A stat of a few folders, once per look change.
+    let installed = gtk::IconTheme::for_display(&display)
+        .search_path()
+        .iter()
+        .any(|folder| gio::File::for_path(folder.join(COMMANDER_ICONS).join("index.theme")).query_exists(gio::Cancellable::NONE));
+    if installed {
+        settings.set_gtk_icon_theme_name(Some(COMMANDER_ICONS));
+    }
+}
+
 // --- Applying and watching ---
 
 type LookListener = Rc<dyn Fn(Look)>;
@@ -554,6 +579,7 @@ impl Theme {
         } else if let Some(before) = self.scheme_before.take() {
             style.set_color_scheme(before);
         }
+        commander_icons(look == Look::Commander);
     }
 
     /// The main window's "translucent", "omarchy-look" and
