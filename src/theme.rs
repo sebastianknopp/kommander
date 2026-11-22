@@ -30,6 +30,17 @@
 // only for it. Moving the menu button out of the hidden top bar is
 // window.rs's part. Without an Omarchy theme both Omarchy looks fall back
 // to GNOME, as Preferences shows.
+//
+// The "Commander" look, a modern homage to Norton Commander, is the Omarchy
+// look's shapes plus data/commander.css (frames, the path set into the top
+// edge, the F-key blocks) in its fixed palette, written by `commander_css`
+// below as the same libadwaita variables, plus a few `--nc-*` ones for what
+// libadwaita has no name for. That palette is the one place in Kommander
+// where colours are written out rather than taken from a theme: Norton
+// Commander's blue is the point of the look. It never follows the Omarchy
+// theme, so it needs none, and it is always dark (libadwaita is told so
+// while it is shown, and gets its earlier choice back afterwards). The main
+// window gets both the "omarchy-look" and the "commander-look" class.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -267,6 +278,122 @@ pub fn css(palette: &Palette) -> String {
     out
 }
 
+// --- The Commander palette (pure, tested) ---
+
+/// Norton Commander's colours, brought up to date. The only hard-coded
+/// colours in Kommander (see the header comment); data/commander.css uses
+/// them only through the variables `commander_css` writes.
+mod nc {
+    use super::Rgb;
+    /// The panels, the sidebar and the preview: deep navy.
+    pub const NAVY: Rgb = Rgb(0x13, 0x23, 0x5f);
+    /// Preferences, shortcuts and About: a touch lighter than the panels.
+    pub const NAVY_RAISED: Rgb = Rgb(0x1a, 0x2d, 0x70);
+    /// Ordinary text: soft cyan.
+    pub const TEXT: Rgb = Rgb(0x8f, 0xe3, 0xea);
+    /// Folder names: near white.
+    pub const BRIGHT: Rgb = Rgb(0xf2, 0xf6, 0xff);
+    /// The cursor bar, the active path, menus and the F-key labels.
+    pub const CYAN: Rgb = Rgb(0x2a, 0xa9, 0xb5);
+    /// Text on cyan and amber fills: darker than the panels' navy, so it
+    /// reads well on both.
+    pub const INK: Rgb = Rgb(0x0a, 0x12, 0x38);
+    /// Marked files and the column headers.
+    pub const AMBER: Rgb = Rgb(0xff, 0xd8, 0x66);
+    /// The F-key strip, and its key numbers.
+    pub const BAR: Rgb = Rgb(0x07, 0x0b, 0x18);
+    pub const BAR_TEXT: Rgb = Rgb(0xc9, 0xcc, 0xd6);
+    /// Questions (copy, move, new folder): light grey, dark text.
+    pub const GREY: Rgb = Rgb(0xc8, 0xcb, 0xd2);
+    pub const GREY_INK: Rgb = Rgb(0x10, 0x14, 0x2a);
+    /// Destructive questions (delete for good): red, white text.
+    pub const RED: Rgb = Rgb(0xb0, 0x22, 0x2c);
+    /// Red as text on the questions' grey (warnings in the name field).
+    pub const RED_ON_GREY: Rgb = Rgb(0x8a, 0x18, 0x20);
+    pub const WHITE: Rgb = Rgb(0xff, 0xff, 0xff);
+    /// Accent, red and green as text on navy.
+    pub const ACCENT_TEXT: Rgb = Rgb(0x5f, 0xd7, 0xe0);
+    pub const RED_TEXT: Rgb = Rgb(0xff, 0x8f, 0x8f);
+    pub const GREEN: Rgb = Rgb(0x4c, 0xc0, 0x7a);
+    pub const GREEN_TEXT: Rgb = Rgb(0x8f, 0xe3, 0x9a);
+
+    /// Frames and column lines: the text colour, quieter.
+    pub fn frame() -> Rgb {
+        TEXT.mix(NAVY, 0.35)
+    }
+}
+
+/// The stylesheet with the Commander look's colours: libadwaita's
+/// variables, as `css` writes them for an Omarchy theme, plus the
+/// `--nc-*` ones data/commander.css needs.
+pub fn commander_css() -> String {
+    use nc::*;
+    let hex = Rgb::hex;
+    let card = format!("color-mix(in srgb, {} 8%, transparent)", hex(TEXT));
+    let variables: [(&str, String); 50] = [
+        ("window-bg-color", hex(NAVY)),
+        ("window-fg-color", hex(TEXT)),
+        ("view-bg-color", hex(NAVY)),
+        ("view-fg-color", hex(TEXT)),
+        // The F-key strip is the bottom bar, which takes the header bar's
+        // colours (there is no top bar in this look).
+        ("headerbar-bg-color", hex(BAR)),
+        ("headerbar-backdrop-color", hex(BAR)),
+        ("headerbar-fg-color", hex(BAR_TEXT)),
+        ("sidebar-bg-color", hex(NAVY)),
+        ("sidebar-backdrop-color", hex(NAVY)),
+        ("sidebar-fg-color", hex(TEXT)),
+        ("secondary-sidebar-bg-color", hex(NAVY)),
+        ("secondary-sidebar-backdrop-color", hex(NAVY)),
+        ("secondary-sidebar-fg-color", hex(TEXT)),
+        ("dialog-bg-color", hex(NAVY_RAISED)),
+        ("dialog-fg-color", hex(TEXT)),
+        ("popover-bg-color", hex(CYAN)),
+        ("popover-fg-color", hex(INK)),
+        ("thumbnail-bg-color", hex(NAVY_RAISED)),
+        ("thumbnail-fg-color", hex(TEXT)),
+        ("card-bg-color", card),
+        ("card-fg-color", hex(TEXT)),
+        ("accent-bg-color", hex(CYAN)),
+        ("accent-fg-color", hex(INK)),
+        ("accent-color", hex(ACCENT_TEXT)),
+        ("destructive-bg-color", hex(RED)),
+        ("destructive-fg-color", hex(WHITE)),
+        ("destructive-color", hex(RED_TEXT)),
+        ("error-bg-color", hex(RED)),
+        ("error-fg-color", hex(WHITE)),
+        ("error-color", hex(RED_TEXT)),
+        ("warning-bg-color", hex(AMBER)),
+        ("warning-fg-color", hex(INK)),
+        ("warning-color", hex(AMBER)),
+        ("success-bg-color", hex(GREEN)),
+        ("success-fg-color", hex(INK)),
+        ("success-color", hex(GREEN_TEXT)),
+        ("orange-3", hex(AMBER)),
+        ("nc-panel", hex(NAVY)),
+        ("nc-text", hex(TEXT)),
+        ("nc-bright", hex(BRIGHT)),
+        ("nc-frame", hex(frame())),
+        ("nc-amber", hex(AMBER)),
+        ("nc-cursor", hex(CYAN)),
+        ("nc-ink", hex(INK)),
+        ("nc-key-number", hex(BAR_TEXT)),
+        ("nc-question-bg", hex(GREY)),
+        ("nc-question-fg", hex(GREY_INK)),
+        ("nc-danger-bg", hex(RED)),
+        ("nc-danger-fg", hex(WHITE)),
+        ("nc-question-error", hex(RED_ON_GREY)),
+    ];
+    let mut out = String::from(":root {\n");
+    for (name, value) in variables {
+        let _ = writeln!(out, "  --{name}: {value};");
+    }
+    // Secondary text a little stronger than libadwaita's 55%, as in the
+    // Omarchy looks.
+    out.push_str("  --dim-opacity: 80%;\n}\n");
+    out
+}
+
 // --- Applying and watching ---
 
 type LookListener = Rc<dyn Fn(Look)>;
@@ -274,9 +401,13 @@ type LookListener = Rc<dyn Fn(Look)>;
 struct Theme {
     /// Holds the theme's stylesheet, or nothing for plain libadwaita.
     provider: gtk::CssProvider,
-    /// Holds data/omarchy.css in the Omarchy look, otherwise nothing.
+    /// Holds data/omarchy.css in the Omarchy look (followed by
+    /// data/commander.css in the Commander look), otherwise nothing.
     shapes: gtk::CssProvider,
     look: Cell<Look>,
+    /// libadwaita's light/dark choice from before the Commander look
+    /// forced dark, given back when another look is shown.
+    scheme_before: Cell<Option<adw::ColorScheme>>,
     /// Told the shown look whenever it is applied (window.rs moves the
     /// menu button with it).
     on_look: RefCell<Option<LookListener>>,
@@ -308,6 +439,7 @@ pub fn start(app: &adw::Application, settings: &Settings) {
         provider: gtk::CssProvider::new(),
         shapes: gtk::CssProvider::new(),
         look: Cell::new(settings.look),
+        scheme_before: Cell::new(None),
         on_look: RefCell::default(),
         theme_css: RefCell::default(),
         translucent: Cell::new(settings.translucent),
@@ -362,7 +494,7 @@ pub fn connect_look_shown(f: impl Fn(Look) + 'static) {
 }
 
 /// The look actually shown: the chosen one, or GNOME when there is no
-/// Omarchy theme to follow.
+/// Omarchy theme to follow (Commander needs none).
 pub fn shown_look() -> Look {
     THEME.with(|cell| cell.get().map_or(Look::Gnome, |theme| theme.shown_look()))
 }
@@ -377,18 +509,31 @@ pub fn set_translucent(translucent: bool) {
 
 impl Theme {
     fn shown_look(&self) -> Look {
-        if self.theme_css.borrow().is_empty() { Look::Gnome } else { self.look.get() }
+        match self.look.get() {
+            Look::Commander => Look::Commander,
+            _ if self.theme_css.borrow().is_empty() => Look::Gnome,
+            look => look,
+        }
     }
 
     fn apply(&self) {
         let look = self.shown_look();
         let colours = match look {
             Look::OmarchyColours | Look::Omarchy => self.theme_css.borrow().clone(),
+            Look::Commander => commander_css(),
             Look::Gnome => String::new(),
         };
         self.provider.load_from_string(&colours);
-        let shapes = if look == Look::Omarchy { include_str!("../data/omarchy.css") } else { "" };
-        self.shapes.load_from_string(shapes);
+        let omarchy = include_str!("../data/omarchy.css");
+        let shapes = match look {
+            Look::Omarchy => omarchy.to_string(),
+            // One provider, the Commander rules after the Omarchy ones, so
+            // they win where both set the same thing.
+            Look::Commander => format!("{omarchy}\n{}", include_str!("../data/commander.css")),
+            Look::Gnome | Look::OmarchyColours => String::new(),
+        };
+        self.shapes.load_from_string(&shapes);
+        self.apply_scheme(look);
         self.apply_window_classes();
         let listener = self.on_look.borrow().clone();
         if let Some(listener) = listener {
@@ -396,12 +541,34 @@ impl Theme {
         }
     }
 
-    /// The main window's "translucent" and "omarchy-look" classes.
+    /// Always dark in the Commander look, whatever the system says (its
+    /// navy is meant to carry light text); libadwaita's earlier choice
+    /// comes back with any other look.
+    fn apply_scheme(&self, look: Look) {
+        let style = adw::StyleManager::default();
+        if look == Look::Commander {
+            if self.scheme_before.get().is_none() {
+                self.scheme_before.set(Some(style.color_scheme()));
+                style.set_color_scheme(adw::ColorScheme::ForceDark);
+            }
+        } else if let Some(before) = self.scheme_before.take() {
+            style.set_color_scheme(before);
+        }
+    }
+
+    /// The main window's "translucent", "omarchy-look" and
+    /// "commander-look" classes.
     fn apply_window_classes(&self) {
-        let omarchy = self.shown_look() == Look::Omarchy;
+        let look = self.shown_look();
+        let omarchy = matches!(look, Look::Omarchy | Look::Commander);
+        let commander = look == Look::Commander;
         for window in gtk::Window::list_toplevels() {
             if window.has_css_class("main-window") {
-                for (class, on) in [("translucent", self.translucent.get()), ("omarchy-look", omarchy)] {
+                for (class, on) in [
+                    ("translucent", self.translucent.get()),
+                    ("omarchy-look", omarchy),
+                    ("commander-look", commander),
+                ] {
                     if on {
                         window.add_css_class(class);
                     } else {
@@ -616,6 +783,53 @@ green = "#879A39"
         assert!(css.contains("--dialog-bg-color: #f2efe4;"));
         assert!(css.contains("--card-bg-color: #fffcf0;"));
         assert!(css.contains("--accent-fg-color: #fffcf0;"));
+    }
+
+    #[test]
+    fn commander_palette_reads_well() {
+        use nc::*;
+        let css = commander_css();
+        assert!(css.starts_with(":root {\n") && css.ends_with("}\n"));
+        for line in [
+            "--window-bg-color: #13235f;",
+            "--window-fg-color: #8fe3ea;",
+            "--popover-bg-color: #2aa9b5;",
+            "--accent-fg-color: #0a1238;",
+            "--nc-amber: #ffd866;",
+            "--nc-frame: #",
+            "--nc-question-bg: #c8cbd2;",
+            "--nc-danger-fg: #ffffff;",
+            "--dim-opacity: 80%;",
+        ] {
+            assert!(css.contains(line), "{line} missing in {css}");
+        }
+        // Only hex colours (and the card's mix with transparent).
+        for word in ["rgb(", "hsl(", "white", "black", "@"] {
+            assert!(!css.contains(word), "{word} in {css}");
+        }
+        // Every text on the fill it is shown on, at least 4.5 : 1.
+        let pairs = [
+            (TEXT, NAVY, "text"),
+            (BRIGHT, NAVY, "folders"),
+            (AMBER, NAVY, "marked files and column headers"),
+            (INK, CYAN, "cursor bar, active path, menus, F-key labels"),
+            (INK, AMBER, "cursor on a marked file"),
+            (BAR_TEXT, BAR, "F-key numbers"),
+            (TEXT, NAVY_RAISED, "Preferences"),
+            (ACCENT_TEXT, NAVY, "accent text"),
+            (RED_TEXT, NAVY, "error text"),
+            (GREEN_TEXT, NAVY, "success text"),
+            (GREY_INK, GREY, "questions"),
+            (WHITE, RED, "destructive questions"),
+            (RED_ON_GREY, GREY, "errors in questions"),
+            (TEXT.mix(NAVY, 0.2), NAVY, "dimmed text"),
+            (GREY_INK.mix(GREY, 0.2), GREY, "dimmed text in a question"),
+        ];
+        for (text, fill, what) in pairs {
+            assert!(contrast(text, fill) >= READABLE, "{what}: {:.2}", contrast(text, fill));
+        }
+        // The frame is a line, not text, but should still stand out.
+        assert!(contrast(frame(), NAVY) >= 3.0);
     }
 
     #[test]

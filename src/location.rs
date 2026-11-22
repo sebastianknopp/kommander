@@ -145,7 +145,12 @@ impl Location {
         let strip = gtk::Box::builder().css_classes(["path-strip", "location-strip"]).build();
         strip.append(&entry);
 
-        let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::None).build();
+        // "location-stack": set into the panel's frame in the Commander look
+        // (data/commander.css).
+        let stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::None)
+            .css_classes(["location-stack"])
+            .build();
         stack.add_named(breadcrumbs, Some("breadcrumbs"));
         stack.add_named(&strip, Some("entry"));
         stack.set_visible_child_name("breadcrumbs");

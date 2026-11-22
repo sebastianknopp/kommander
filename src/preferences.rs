@@ -16,7 +16,7 @@ pub fn present(
     on_look: impl Fn(Look) + 'static,
     on_translucent: impl Fn(bool) + 'static,
 ) {
-    let Settings { icon_size, preview_in_window, look, translucent, .. } = *settings;
+    let Settings { icon_size, preview_in_window, translucent, .. } = *settings;
     let toggles = adw::ToggleGroup::builder()
         .valign(gtk::Align::Center)
         .homogeneous(true)
@@ -41,37 +41,38 @@ pub fn present(
     let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
     appearance.add(&icon_row);
 
-    // Look: plain GNOME, GNOME shapes in the Omarchy theme's colours, or
-    // Omarchy's own app style. Without Omarchy there is no theme to
-    // follow, so the choice is shown disabled, set to GNOME.
-    // Three labels, one long: the row's subtitle wraps rather than the
-    // labels being cut short.
-    let looks = adw::ToggleGroup::builder()
-        .valign(gtk::Align::Center)
-        .can_shrink(false)
-        .build();
-    for (choice, label) in [
+    // Look: plain GNOME, GNOME shapes in the Omarchy theme's colours,
+    // Omarchy's own app style, or Commander (Norton Commander's colours on
+    // the Omarchy shapes). A drop-down: four choices side by side are too
+    // wide for the dialog. Without Omarchy there is no theme to follow, so
+    // only GNOME and Commander are offered (an Omarchy look shows as GNOME).
+    let choices: Vec<(Look, &str)> = [
         (Look::Gnome, "GNOME"),
         (Look::OmarchyColours, "Omarchy Colours"),
         (Look::Omarchy, "Omarchy"),
-    ] {
-        looks.add(adw::Toggle::builder().name(choice.as_str()).label(label).build());
-    }
-    let look_row = adw::ActionRow::builder().title("Look").build();
-    if theme::available() {
-        look_row.set_subtitle("The Omarchy looks follow the desktop theme as it changes");
-        looks.set_active_name(Some(look.as_str()));
+        (Look::Commander, "Commander"),
+    ]
+    .into_iter()
+    .filter(|(choice, _)| theme::available() || matches!(choice, Look::Gnome | Look::Commander))
+    .collect();
+    let labels: Vec<&str> = choices.iter().map(|(_, label)| *label).collect();
+    let look_row = adw::ComboRow::builder()
+        .title("Look")
+        .model(&gtk::StringList::new(&labels))
+        .build();
+    look_row.set_subtitle(if theme::available() {
+        "The Omarchy looks follow the desktop theme as it changes"
     } else {
-        look_row.set_subtitle("No Omarchy theme found on this computer");
-        looks.set_active_name(Some(Look::Gnome.as_str()));
-        look_row.set_sensitive(false);
-    }
-    looks.connect_active_name_notify(move |looks| {
-        if let Some(look) = looks.active_name().and_then(|n| Look::parse(&n)) {
-            on_look(look);
+        "No Omarchy theme found on this computer"
+    });
+    let shown = theme::shown_look();
+    let selected = choices.iter().position(|(choice, _)| *choice == shown).unwrap_or(0);
+    look_row.set_selected(selected as u32);
+    look_row.connect_selected_notify(move |row| {
+        if let Some((look, _)) = choices.get(row.selected() as usize) {
+            on_look(*look);
         }
     });
-    look_row.add_suffix(&looks);
     appearance.add(&look_row);
 
     let translucent_row = adw::SwitchRow::builder()

@@ -122,7 +122,9 @@ pub struct PathBar {
 
 impl PathBar {
     pub fn new() -> Rc<Self> {
-        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // "path-crumbs": the Commander look draws the breadcrumbs as one
+        // block (data/commander.css).
+        let buttons = gtk::Box::builder().css_classes(["path-crumbs"]).build();
 
         // Scrolls sideways only, without a visible scrollbar; its minimum
         // width does not depend on the path, so long paths never widen the panel.
@@ -228,6 +230,13 @@ impl PathBar {
             pill,
             pill_timer: Rc::default(),
         })
+    }
+
+    /// Centres the breadcrumbs in the strip (the Commander look sets them
+    /// into the frame's top edge), or puts them back at its start. A long
+    /// path still scrolls as before.
+    pub fn set_centred(&self, centred: bool) {
+        self.buttons.set_halign(if centred { gtk::Align::Center } else { gtk::Align::Fill });
     }
 
     /// Calls `f` when the strip is double-clicked anywhere but on an

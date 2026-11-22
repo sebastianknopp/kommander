@@ -72,6 +72,9 @@ struct State {
     header: adw::HeaderBar,
     menu_button: gtk::MenuButton,
     fkey_slot: gtk::Box,
+    /// The function-key bar, whose keys the Commander look shows as bare
+    /// numbers.
+    fkeybar: gtk::Widget,
 }
 
 impl State {
@@ -100,12 +103,24 @@ impl State {
     /// end of the function-key bar. The other looks put them back. The
     /// same widgets move (not rebuilt), so their popovers, F10 and the
     /// progress strip keep working. Called at start-up and whenever the
-    /// shown look changes (theme.rs).
+    /// shown look changes (theme.rs). The Commander look is the Omarchy
+    /// look in this, and also has its own touches: bare numbers on the
+    /// F-keys, titles centred in the frames, the Size column's "►DIR◄".
     fn apply_look(&self, look: Look) {
+        let commander = look == Look::Commander;
+        fkeybar::show_bare_numbers(&self.fkeybar, commander);
+        for panel in &self.panels {
+            panel.set_look(look);
+        }
+        for preview in &self.previews {
+            preview.set_title_centred(commander);
+        }
+        self.sidebar.set_title_centred(commander);
+
         let menu: &gtk::Widget = self.menu_button.upcast_ref();
         let operations = self.operations.widget();
         let in_slot = menu.parent().as_ref() == Some(self.fkey_slot.upcast_ref());
-        let omarchy = look == Look::Omarchy;
+        let omarchy = matches!(look, Look::Omarchy | Look::Commander);
         if omarchy && !in_slot {
             self.header.remove(menu);
             self.header.remove(operations);
@@ -460,6 +475,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             header: header.clone(),
             menu_button: menu_button.clone(),
             fkey_slot,
+            fkeybar: fkeybar.clone(),
         }
     });
     state.apply_icon_size(state.settings.borrow().icon_size);

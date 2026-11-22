@@ -1,0 +1,376 @@
+/* The "Commander" look (Preferences > Look): a modern homage to Norton
+ * Commander, laid over data/omarchy.css (square, monospace, no top bar).
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Loaded only in that look, by theme.rs, in the same provider as
+ * omarchy.css and after it, so a rule here beats an equally specific one
+ * there; both beat style.css and libadwaita whatever the selectors.
+ *
+ * What it adds:
+ * - a 1px line frame round each panel, the sidebar and the preview, with
+ *   the folder path set into the top edge (centred by panel.rs, pathbar.rs,
+ *   sidebar.rs and preview.rs); the active panel's path an inverse block;
+ * - a line above the status line, thin lines between the columns
+ *   (GtkColumnView's own separators, switched on by panel.rs), amber
+ *   column headers, near-white bold folder names;
+ * - the cursor a cyan bar, marked files amber text (not filled rows), the
+ *   cursor on a marked file an amber bar; the inactive panel's cursor a
+ *   line only;
+ * - the F-key bar as a dark strip of numbers and cyan label blocks
+ *   ("5 Copy"; fkeybar.rs shows the bare numbers);
+ * - cyan menus with dark text, grey questions with dark text and a line
+ *   frame, red questions for what cannot be undone.
+ *
+ * The colours are the fixed palette theme.rs writes (libadwaita's variables
+ * and the --nc-* ones); nothing here names a colour, only variables and
+ * mixes of them with transparent. Rules meant only for the main window
+ * start with window.commander-look. */
+
+/* --- Frames: panels, preview and sidebar ---
+ * The frame is the box's border; its title (path, file name, "Favourites")
+ * is pulled up by half its height so it sits on the top line, and its own
+ * background interrupts the line. The 11px top margin makes room for the
+ * upper half; 22px is the title's height. */
+
+window.commander-look .panel,
+window.commander-look .favourites {
+  margin: 11px 3px 3px 3px;
+  border: 1px solid var(--nc-frame);
+}
+
+/* Adjacent frames stand apart, as Norton Commander's two panels did; the
+ * draggable line between them only takes room. */
+window.commander-look paned.panels-split > separator {
+  background-color: transparent;
+}
+
+window.commander-look .panel > .location-stack,
+window.commander-look .panel.preview > .path-strip,
+window.commander-look .favourites > .favourites-title {
+  margin-top: -12px;
+  min-height: 22px;
+}
+
+window.commander-look .panel .path-strip,
+window.commander-look .panel.active .path-strip {
+  --strip-bg-color: transparent;
+  background: none;
+  padding: 0;
+  border-bottom: none;
+  min-height: 22px;
+  color: var(--nc-text);
+}
+
+window.commander-look .path-strip scrolledwindow undershoot.left,
+window.commander-look .path-strip scrolledwindow undershoot.right {
+  background: none;
+}
+
+/* The path: one block, plain in the inactive panel, inverse (cyan, dark
+ * text) in the active one. */
+window.commander-look .path-crumbs {
+  background-color: var(--nc-panel);
+  color: var(--nc-text);
+  padding: 0 6px;
+}
+
+window.commander-look .panel.active .path-crumbs {
+  background-color: var(--nc-cursor);
+  color: var(--nc-ink);
+}
+
+window.commander-look .path-strip .path-button {
+  min-height: 22px;
+  padding: 0 3px;
+  color: inherit;
+}
+
+window.commander-look .path-strip .path-button:hover {
+  background-color: transparent;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
+window.commander-look .path-strip .dimmed,
+window.commander-look .panel:not(.active) .path-strip .dimmed {
+  opacity: 0.85;
+}
+
+/* Typing a path (Ctrl+L): the field covers the top line. */
+window.commander-look .path-strip.location-strip entry {
+  min-height: 22px;
+  background-color: var(--nc-panel);
+  box-shadow: inset 0 0 0 1px var(--nc-text);
+}
+
+/* The preview's name strip, centred by preview.rs. */
+window.commander-look .panel.preview > .path-strip {
+  background-color: var(--nc-panel);
+  padding: 0 6px;
+}
+
+window.commander-look .favourites > .favourites-title {
+  padding: 0 6px;
+  border-bottom: none;
+  background-color: var(--nc-panel);
+  color: var(--nc-text);
+}
+
+window.commander-look .favourites-bar.keyboard .favourites-title {
+  background-color: var(--nc-cursor);
+  color: var(--nc-ink);
+}
+
+/* Lines above the status line and its stand-ins. */
+window.commander-look .panel .status-line,
+window.commander-look .panel .search-bar,
+window.commander-look .panel .network-bar {
+  border-top: 1px solid var(--nc-frame);
+}
+
+/* --- File list --- */
+
+/* Rows touch, so the column lines run through. */
+window.commander-look .panel columnview > listview {
+  border-spacing: 0;
+  padding-top: 0;
+}
+
+window.commander-look .panel columnview.column-separators > listview > row > cell,
+window.commander-look .panel columnview.column-separators > header > button {
+  border-left-color: var(--nc-frame);
+}
+
+/* Column headers in amber, as the original's. */
+window.commander-look .panel columnview > header > button > box,
+window.commander-look .panel columnview > header > button:hover > box {
+  color: var(--nc-amber);
+}
+
+/* Sizes and dates as strong as the names. */
+window.commander-look .panel .file-cell.dimmed {
+  opacity: 1;
+}
+
+window.commander-look .panel .file-cell.folder > label {
+  color: var(--nc-bright);
+  font-weight: bold;
+}
+
+/* Marked files: amber text, no fill. */
+window.commander-look .panel columnview > listview > row.marked,
+window.commander-look .panel columnview > listview > row.marked:hover {
+  background-color: transparent;
+}
+
+window.commander-look .panel .file-cell.marked,
+window.commander-look .panel .file-cell.marked > label,
+window.commander-look .panel .file-cell.folder.marked > label {
+  color: var(--nc-amber);
+}
+
+/* The cursor: a cyan bar with dark text in the active panel. */
+window.commander-look .panel.active columnview > listview > row:selected,
+window.commander-look .panel.active columnview > listview > row:selected:hover {
+  background-color: var(--nc-cursor);
+  box-shadow: none;
+}
+
+window.commander-look .panel.active columnview > listview > row:selected .file-cell,
+window.commander-look .panel.active columnview > listview > row:selected .file-cell > label,
+window.commander-look .panel.active columnview > listview > row:selected .file-cell.folder > label {
+  color: var(--nc-ink);
+}
+
+/* On a marked file, an amber bar. */
+window.commander-look .panel.active columnview > listview > row.marked:selected,
+window.commander-look .panel.active columnview > listview > row.marked:selected:hover {
+  background-color: var(--nc-amber);
+}
+
+/* The inactive panel's cursor: a line only, the text as it is. */
+window.commander-look .panel:not(.active) columnview > listview > row:selected,
+window.commander-look .panel:not(.active) columnview > listview > row:selected:hover,
+window.commander-look .panel:not(.active) columnview > listview > row.marked:selected,
+window.commander-look .panel:not(.active) columnview > listview > row.marked:selected:hover {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--nc-text);
+}
+
+/* Favourites: the cursor bar while the keys are in the sidebar. */
+window.commander-look .favourites-bar.keyboard .favourites row:selected,
+window.commander-look .favourites-bar.keyboard .favourites row:selected:hover {
+  background-color: var(--nc-cursor);
+  color: var(--nc-ink);
+}
+
+/* --- The F-key bar: a dark strip, numbers and cyan label blocks --- */
+
+window.commander-look toolbarview > .bottom-bar {
+  border-top: none;
+}
+
+window.commander-look .fkeybar {
+  padding: 3px 4px;
+}
+
+window.commander-look .fkeybar button,
+window.commander-look .fkeybar .fkeys.tight button,
+window.commander-look .fkeybar .fkeys.compact button {
+  padding: 0;
+  min-height: 0;
+  font-size: 12px;
+  color: var(--nc-key-number);
+}
+
+window.commander-look .fkeybar button:hover,
+window.commander-look .fkeybar button:active {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+window.commander-look .fkeybar .keycap {
+  font-size: 12px;
+  font-weight: normal;
+  padding: 1px 3px 1px 0;
+  min-width: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--nc-key-number);
+}
+
+window.commander-look .fkeybar .fkey-label {
+  padding: 1px 6px;
+  background-color: var(--nc-cursor);
+  color: var(--nc-ink);
+}
+
+window.commander-look .fkeybar button:hover .fkey-label {
+  background-color: var(--nc-text);
+}
+
+/* Keys only (narrow window): the numbers themselves become the blocks. */
+window.commander-look .fkeybar .fkeys.compact .keycap {
+  padding: 1px 6px;
+  background-color: var(--nc-cursor);
+  color: var(--nc-ink);
+}
+
+window.commander-look .fkeybar .fkeys.compact button:hover .keycap {
+  background-color: var(--nc-text);
+}
+
+window.commander-look .fkeybar-slot {
+  border-left-color: color-mix(in srgb, var(--nc-key-number) 25%, transparent);
+}
+
+/* --- Menus, tooltips and toasts: cyan with dark text ---
+ * The Omarchy states are mixes of the text colour; on cyan they are made
+ * again from the dark text. */
+
+popover, tooltip, toast {
+  --om-rest: color-mix(in srgb, var(--nc-ink) 6%, transparent);
+  --om-hover: color-mix(in srgb, var(--nc-ink) 12%, transparent);
+  --om-hover-line: color-mix(in srgb, var(--nc-ink) 45%, transparent);
+  --om-selected: color-mix(in srgb, var(--nc-ink) 20%, transparent);
+  --om-pressed: color-mix(in srgb, var(--nc-ink) 26%, transparent);
+  --om-divider: color-mix(in srgb, var(--nc-ink) 30%, transparent);
+  --om-input-line: color-mix(in srgb, var(--nc-ink) 55%, transparent);
+  --om-card-line: var(--nc-ink);
+  --om-dim: color-mix(in srgb, var(--nc-ink) 80%, transparent);
+  --window-fg-color: var(--nc-ink);
+  --accent-color: var(--nc-ink);
+}
+
+/* The item under the pointer or keyboard: inverse, as in the original. */
+popover.menu modelbutton:hover,
+popover.menu modelbutton:selected,
+popover.menu modelbutton:active {
+  background-color: var(--nc-panel);
+  color: var(--nc-text);
+  box-shadow: none;
+}
+
+popover check,
+popover radio {
+  box-shadow: inset 0 0 0 1px var(--nc-ink);
+}
+
+popover check:checked,
+popover radio:checked {
+  background-color: var(--nc-ink);
+  color: var(--nc-cursor);
+}
+
+popover.menu modelbutton:hover check,
+popover.menu modelbutton:selected check {
+  box-shadow: inset 0 0 0 1px var(--nc-text);
+}
+
+popover.menu modelbutton:hover check:checked,
+popover.menu modelbutton:selected check:checked {
+  background-color: var(--nc-text);
+  color: var(--nc-panel);
+}
+
+/* Lists in popovers (the Look drop-down, the operations list). */
+popover listview > row:selected,
+popover listview > row:hover {
+  background-color: var(--nc-panel);
+  color: var(--nc-text);
+}
+
+popover entry {
+  color: var(--nc-ink);
+}
+
+/* --- Questions: grey with dark text and a line frame --- */
+
+dialog.alert {
+  --dialog-bg-color: var(--nc-question-bg);
+  --dialog-fg-color: var(--nc-question-fg);
+  --window-fg-color: var(--nc-question-fg);
+  --view-fg-color: var(--nc-question-fg);
+  --card-bg-color: color-mix(in srgb, var(--nc-question-fg) 5%, transparent);
+  --card-fg-color: var(--nc-question-fg);
+  --accent-color: var(--nc-panel);
+  --error-color: var(--nc-question-error);
+  --om-rest: color-mix(in srgb, var(--nc-question-fg) 6%, transparent);
+  --om-hover: color-mix(in srgb, var(--nc-question-fg) 12%, transparent);
+  --om-hover-line: color-mix(in srgb, var(--nc-question-fg) 45%, transparent);
+  --om-selected: color-mix(in srgb, var(--nc-question-fg) 20%, transparent);
+  --om-pressed: color-mix(in srgb, var(--nc-question-fg) 26%, transparent);
+  --om-divider: color-mix(in srgb, var(--nc-question-fg) 25%, transparent);
+  --om-input-line: color-mix(in srgb, var(--nc-question-fg) 55%, transparent);
+  --om-card-line: var(--nc-question-fg);
+  --om-dim: color-mix(in srgb, var(--nc-question-fg) 80%, transparent);
+}
+
+/* Norton Commander's dialog frame: a line at the edge and another a little
+ * inside it (an outline is drawn over the content, so it needs no room). */
+dialog.alert floating-sheet > sheet,
+dialog.alert.bottom-sheet sheet {
+  border: 1px solid var(--dialog-fg-color);
+  outline: 1px solid var(--dialog-fg-color);
+  outline-offset: -6px;
+}
+
+/* Things that cannot be undone (delete for good, stop and quit): red with
+ * white text; the button that does it white with red text. */
+dialog.alert.destructive-question {
+  --dialog-bg-color: var(--nc-danger-bg);
+  --dialog-fg-color: var(--nc-danger-fg);
+  --window-fg-color: var(--nc-danger-fg);
+  --view-fg-color: var(--nc-danger-fg);
+  --accent-color: var(--nc-danger-fg);
+  --destructive-bg-color: var(--nc-danger-fg);
+  --destructive-fg-color: var(--nc-danger-bg);
+  --dim-opacity: 100%;
+  --om-rest: color-mix(in srgb, var(--nc-danger-fg) 10%, transparent);
+  --om-hover: color-mix(in srgb, var(--nc-danger-fg) 18%, transparent);
+  --om-hover-line: color-mix(in srgb, var(--nc-danger-fg) 55%, transparent);
+  --om-pressed: color-mix(in srgb, var(--nc-danger-fg) 28%, transparent);
+  --om-divider: color-mix(in srgb, var(--nc-danger-fg) 30%, transparent);
+  --om-card-line: var(--nc-danger-fg);
+}

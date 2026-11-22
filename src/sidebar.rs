@@ -411,6 +411,15 @@ impl Sidebar {
         self.revealer.upcast_ref()
     }
 
+    /// Centres the "Favourites" title, as the Commander look sets it into
+    /// the frame's top edge like a panel's path; otherwise it fills its strip.
+    pub fn set_title_centred(&self, centred: bool) {
+        let title = self.revealer.child().and_then(|column| column.first_child());
+        if let Some(title) = title {
+            title.set_halign(if centred { gtk::Align::Center } else { gtk::Align::Fill });
+        }
+    }
+
     /// Slides the sidebar in or out.
     pub fn set_shown(&self, shown: bool) {
         self.revealer.set_reveal_child(shown);

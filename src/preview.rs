@@ -360,6 +360,14 @@ impl Preview {
         preview
     }
 
+    /// Centres the name strip, as the Commander look sets it into the
+    /// frame's top edge like a panel's path; otherwise it fills the top.
+    pub fn set_title_centred(&self, centred: bool) {
+        if let Some(strip) = self.root.first_child() {
+            strip.set_halign(if centred { gtk::Align::Center } else { gtk::Align::Fill });
+        }
+    }
+
     pub fn widget(&self) -> &gtk::Widget {
         self.root.upcast_ref()
     }

@@ -36,8 +36,9 @@ use crate::ops::transfer::Kind;
 use crate::dialogs::{self, label};
 use crate::pathbar::PathBar;
 use crate::report::{self, ErrorText, Problem};
-use crate::settings::{Sort, SortColumn};
+use crate::settings::{Look, Sort, SortColumn};
 use crate::start::Target;
+use crate::theme;
 
 /// After this long without the new folder ready, the panel goes into it
 /// and shows a spinner; folders read faster never show one.
@@ -369,6 +370,24 @@ impl Panel {
 
     pub fn widget(&self) -> &gtk::Widget {
         self.root.upcast_ref()
+    }
+
+    /// Follows the shown look: in the Commander look the path sits centred
+    /// in the frame's top edge, thin lines part the columns and the Size
+    /// column says "►DIR◄" and "►UP◄" (rows on screen are redone here,
+    /// others when they are next shown).
+    pub fn set_look(&self, look: Look) {
+        let commander = look == Look::Commander;
+        self.path_bar.set_centred(commander);
+        self.column_view.set_show_column_separators(commander);
+        for cell in self.marked.cells.borrow().iter().filter_map(|cell| cell.upgrade()) {
+            if let (Some(label), Some(info)) = (
+                cell.child().filter(|child| child.has_css_class("size-cell")).and_downcast::<gtk::Label>(),
+                cell.item().and_downcast::<gio::FileInfo>(),
+            ) {
+                label.set_label(&size_text(&info, commander));
+            }
+        }
     }
 
     pub fn set_active(&self, active: bool) {
@@ -2540,6 +2559,12 @@ fn name_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
             let label = cell.last_child().and_downcast::<gtk::Label>().unwrap();
             icon.set_from_gicon(&listings::icon_for(info));
             label.set_label(&info.display_name());
+            // Folder names stand out in the Commander look (commander.css).
+            if is_dir(info) {
+                cell.add_css_class("folder");
+            } else {
+                cell.remove_css_class("folder");
+            }
         },
     );
     column.set_expand(true);
@@ -2559,18 +2584,31 @@ fn detail_columns_for(width: i32) -> [bool; 2] {
     [width >= NAME_ROOM + SIZE_WIDTH, width >= NAME_ROOM + SIZE_WIDTH + MODIFIED_WIDTH]
 }
 
+/// What the Size column shows for `info`: the size of a file, nothing for
+/// a folder; in the Commander look Norton Commander's "►UP◄" on the ".."
+/// row and "►DIR◄" on folders.
+fn size_text(info: &gio::FileInfo, commander: bool) -> glib::GString {
+    match (commander, is_parent_entry(info), is_dir(info)) {
+        (true, true, _) => dialogs::SIZE_UP.into(),
+        (true, false, true) => dialogs::SIZE_DIR.into(),
+        (false, _, true) => glib::GString::new(),
+        (_, _, false) => glib::format_size(size_of(info)),
+    }
+}
+
 fn size_column(marked: &Rc<MarkedCells>) -> gtk::ColumnViewColumn {
     let column = column(
         "Size",
         marked,
         compare_sizes,
-        || detail_label(1.0),
+        || {
+            let label = detail_label(1.0);
+            // Found again by `Panel::set_look` when the look changes.
+            label.add_css_class("size-cell");
+            label
+        },
         |cell, info| {
-            let text = if is_dir(info) {
-                glib::GString::new()
-            } else {
-                glib::format_size(size_of(info))
-            };
+            let text = size_text(info, theme::shown_look() == Look::Commander);
             cell.downcast_ref::<gtk::Label>().unwrap().set_label(&text);
         },
     );
@@ -2716,6 +2754,20 @@ mod tests {
         assert!(drag_rows(9, &uris, &marks).is_empty());
         // Nothing marked: the row itself.
         assert_eq!(drag_rows(2, &uris, &Marks::default()), [2]);
+    }
+
+    #[test]
+    fn the_size_column_says_dir_and_up_in_the_commander_look() {
+        let file = info("notes.txt", false, 1500, 0);
+        let folder = info("Music", true, 4096, 0);
+        let parent = parent_entry();
+        let text = |info: &gio::FileInfo, commander| size_text(info, commander).replace('\u{a0}', " ");
+        assert_eq!(text(&file, false), "1.5 kB");
+        assert_eq!(text(&folder, false), "");
+        assert_eq!(text(&parent, false), "");
+        assert_eq!(text(&file, true), "1.5 kB");
+        assert_eq!(text(&folder, true), "►DIR◄");
+        assert_eq!(text(&parent, true), "►UP◄");
     }
 
     #[test]

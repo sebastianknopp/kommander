@@ -21,6 +21,12 @@
 // top bar, window.rs moves the main menu button and the operations button
 // into it (and back into the header bar in the other looks). The keys
 // never take its room: however narrow the window, it keeps its full size.
+//
+// The Commander look shows each key Norton Commander's way, as its bare
+// number followed by the label on a coloured block ("5 Copy");
+// `show_bare_numbers` switches the key boxes' text, the colours are
+// data/commander.css's. The bar measures itself afresh, so the narrow
+// versions keep working with either text.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -45,6 +51,10 @@ const KEYS: [(&str, &str, &str); 8] = [
 
 /// The versions of the keys, fullest first (CSS classes on their rows).
 const VERSIONS: [&str; 3] = ["full", "tight", "compact"];
+
+/// Room between a key box and its label; none with bare numbers, where
+/// the label's block sets itself off (data/commander.css).
+const KEY_SPACING: i32 = 8;
 
 /// How much wider than a fuller version the bar must be before it goes
 /// back to it, so that it does not flicker at the edge while resizing.
@@ -77,6 +87,35 @@ pub fn build() -> (gtk::Widget, gtk::Box) {
     (bar.upcast(), slot)
 }
 
+/// Shows the keys of `bar` (from `build`) as bare numbers ("5") or with
+/// their full names ("F5"). Tooltips stay as they are.
+pub fn show_bare_numbers(bar: &gtk::Widget, bare: bool) {
+    let Some(keys) = bar.first_child() else { return };
+    for row in layout::visible_children(&keys) {
+        let mut button = row.first_child();
+        while let Some(widget) = button {
+            let content = widget.downcast_ref::<gtk::Button>().and_then(|b| b.child()).and_downcast::<gtk::Box>();
+            if let Some(content) = content {
+                // With bare numbers the label's block fills the rest of the
+                // button, as Norton Commander's evenly wide blocks.
+                content.set_spacing(if bare { 0 } else { KEY_SPACING });
+                content.set_halign(if bare { gtk::Align::Fill } else { gtk::Align::Center });
+                if let Some(keycap) = content.first_child().and_downcast::<gtk::Label>() {
+                    let key = keycap.widget_name();
+                    keycap.set_label(if bare { dialogs::fkey_number(&key) } else { &key });
+                }
+                if let Some(label) = content.last_child().and_downcast::<gtk::Label>()
+                    && label.has_css_class("fkey-label")
+                {
+                    label.set_hexpand(bare);
+                    label.set_xalign(if bare { 0.0 } else { 0.5 });
+                }
+            }
+            button = widget.next_sibling();
+        }
+    }
+}
+
 /// One version of the eight keys. The full and tight ones share their row
 /// evenly (all buttons as wide as the widest); in the compact one each key
 /// box takes only what it needs.
@@ -91,12 +130,15 @@ fn key_row(version: &str) -> gtk::Box {
     for (key, label, action) in KEYS {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(KEY_SPACING)
             .halign(gtk::Align::Center)
             .build();
-        content.append(&gtk::Label::builder().label(key).css_classes(["keycap", "numeric"]).build());
+        // The key's own name rides along, for `show_bare_numbers`.
+        content.append(
+            &gtk::Label::builder().label(key).name(key).css_classes(["keycap", "numeric"]).build(),
+        );
         if !compact {
-            content.append(&gtk::Label::new(Some(label)));
+            content.append(&gtk::Label::builder().label(label).css_classes(["fkey-label"]).build());
         }
         let button = gtk::Button::builder()
             .child(&content)

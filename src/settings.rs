@@ -73,14 +73,17 @@ pub struct Sort {
 
 /// The app's look (Preferences): plain GNOME, GNOME shapes in the Omarchy
 /// theme's colours, or Omarchy's own app style (square, monospace, no top
-/// bar; theme.rs and data/omarchy.css). Both Omarchy looks follow the
-/// desktop theme live; without one they fall back to GNOME (theme.rs).
+/// bar; theme.rs and data/omarchy.css), or "Commander": the Omarchy shapes
+/// in Norton Commander's colours (data/commander.css). Both Omarchy looks
+/// follow the desktop theme live; without one they fall back to GNOME
+/// (theme.rs). Commander has fixed colours and needs no theme.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Look {
     Gnome,
     #[default]
     OmarchyColours,
     Omarchy,
+    Commander,
 }
 
 impl Look {
@@ -89,6 +92,7 @@ impl Look {
             Look::Gnome => "gnome",
             Look::OmarchyColours => "omarchy-colours",
             Look::Omarchy => "omarchy",
+            Look::Commander => "commander",
         }
     }
 
@@ -97,6 +101,7 @@ impl Look {
             "gnome" => Some(Look::Gnome),
             "omarchy-colours" => Some(Look::OmarchyColours),
             "omarchy" => Some(Look::Omarchy),
+            "commander" => Some(Look::Commander),
             _ => None,
         }
     }
@@ -396,13 +401,14 @@ mod tests {
 
     #[test]
     fn every_look_survives_a_round_trip() {
-        for look in [Look::Gnome, Look::OmarchyColours, Look::Omarchy] {
+        for look in [Look::Gnome, Look::OmarchyColours, Look::Omarchy, Look::Commander] {
             let settings = Settings { look, ..Settings::default() };
             let file = glib::KeyFile::new();
             file.load_from_data(&settings.to_key_file().to_data(), glib::KeyFileFlags::NONE).unwrap();
             assert_eq!(Settings::from_key_file(&file).look, look);
         }
         assert_eq!(Settings::default().look, Look::OmarchyColours);
+        assert_eq!(Look::Commander.as_str(), "commander");
     }
 
     #[test]

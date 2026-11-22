@@ -527,6 +527,18 @@ pub fn fkey_tooltip(key: &str) -> String {
     format!("{name} ({key})")
 }
 
+/// A key as the Commander look's F-key bar shows it, Norton Commander's
+/// way: the bare number ("5" for F5), the label beside it saying the rest.
+pub fn fkey_number(key: &str) -> &str {
+    key.strip_prefix('F').filter(|number| !number.is_empty()).unwrap_or(key)
+}
+
+// --- The Commander look's Size column (see panel.rs) ---
+
+/// Norton Commander's Size column on the ".." row and on folders.
+pub const SIZE_UP: &str = "►UP◄";
+pub const SIZE_DIR: &str = "►DIR◄";
+
 // --- Single-panel mode ---
 
 /// The main menu's check item for single-panel mode (Ctrl+1 / Ctrl+2).
@@ -876,6 +888,8 @@ pub fn confirm_delete(
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    // The Commander look shows such questions in red (data/commander.css).
+    dialog.add_css_class("destructive-question");
     dialog.connect_response(Some("delete"), move |_, _| on_delete());
     dialog.present(Some(parent));
 }
@@ -1016,6 +1030,7 @@ pub fn confirm_quit(
     dialog.add_response("keep", "Keep Running");
     dialog.add_response("quit", "Stop and Quit");
     dialog.set_response_appearance("quit", adw::ResponseAppearance::Destructive);
+    dialog.add_css_class("destructive-question");
     dialog.connect_response(None, move |_, response| on_answer(response == "quit"));
     dialog.present(Some(parent));
 }
@@ -1345,6 +1360,10 @@ mod tests {
         assert_eq!(fkey_tooltip("F5"), "Copy to the Other Panel (F5)");
         assert_eq!(fkey_tooltip("F8"), "Move to the Trash (F8)");
         assert_eq!(fkey_tooltip("F12"), "F12");
+        assert_eq!(fkey_number("F5"), "5");
+        assert_eq!(fkey_number("F10"), "10");
+        assert_eq!(fkey_number("F"), "F");
+        assert_eq!(fkey_number("Esc"), "Esc");
         assert_eq!(SINGLE_PANEL_MENU, "_Single Panel");
         assert_eq!(SHORTCUT_TWO_PANELS, "Show both panels again");
         for n in 1..=8 {
