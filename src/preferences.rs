@@ -3,8 +3,15 @@
 
 use adw::prelude::*;
 
+use crate::dialogs;
 use crate::settings::{IconSize, Look, Settings};
 use crate::theme;
+
+/// A change to how F4 opens the editor.
+pub enum EditorChange {
+    Command(String),
+    Floats(bool),
+}
 
 /// Shows the dialog over `parent`, set to `settings`. The `on_…` functions
 /// run right away whenever the user changes that setting.
@@ -15,8 +22,10 @@ pub fn present(
     on_preview_in_window: impl Fn(bool) + 'static,
     on_look: impl Fn(Look) + 'static,
     on_translucent: impl Fn(bool) + 'static,
+    on_editor: impl Fn(EditorChange) + 'static,
 ) {
-    let Settings { icon_size, preview_in_window, translucent, .. } = *settings;
+    let on_editor = std::rc::Rc::new(on_editor);
+    let Settings { icon_size, preview_in_window, translucent, editor_floats, .. } = *settings;
     let toggles = adw::ToggleGroup::builder()
         .valign(gtk::Align::Center)
         .homogeneous(true)
@@ -103,9 +112,36 @@ pub fn present(
     let preview = adw::PreferencesGroup::builder().title("Preview").build();
     preview.add(&preview_row);
 
+    // F4: the editor command (kept when Enter or the tick is pressed, so a
+    // half-typed command is never run) and, where Hyprland can do it, the
+    // floating window.
+    let editor = adw::PreferencesGroup::builder()
+        .title(dialogs::EDITOR_GROUP)
+        .description(dialogs::EDITOR_GROUP_HINT)
+        .build();
+    let command_row = adw::EntryRow::builder()
+        .title(dialogs::EDITOR_COMMAND_TITLE)
+        .text(&settings.editor_command)
+        .show_apply_button(true)
+        .build();
+    command_row.add_css_class("monospace");
+    let on_command = on_editor.clone();
+    command_row.connect_apply(move |row| on_command(EditorChange::Command(row.text().trim().to_string())));
+    editor.add(&command_row);
+    if crate::editor::can_float() {
+        let floats_row = adw::SwitchRow::builder()
+            .title(dialogs::EDITOR_FLOATS_TITLE)
+            .subtitle(dialogs::EDITOR_FLOATS_HINT)
+            .active(editor_floats)
+            .build();
+        floats_row.connect_active_notify(move |row| on_editor(EditorChange::Floats(row.is_active())));
+        editor.add(&floats_row);
+    }
+
     let page = adw::PreferencesPage::new();
     page.add(&appearance);
     page.add(&preview);
+    page.add(&editor);
 
     let dialog = adw::PreferencesDialog::new();
     dialog.add(&page);

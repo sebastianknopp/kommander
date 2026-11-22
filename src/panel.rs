@@ -28,6 +28,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::dnd::{self, DropCheck, Hover};
+use crate::editor;
 use crate::listings::{self, Listing, Listings, TypeLookup};
 use crate::location::Location;
 use crate::marks::Marks;
@@ -35,7 +36,7 @@ use crate::network::{self, RowKind};
 use crate::ops::transfer::Kind;
 use crate::dialogs::{self, label};
 use crate::pathbar::PathBar;
-use crate::report::{self, ErrorText, Problem};
+use crate::report::{self, Problem};
 use crate::settings::{Look, Sort, SortColumn};
 use crate::start::Target;
 use crate::theme;
@@ -1541,7 +1542,7 @@ impl Panel {
     }
 
     /// Opens the file under the cursor in the default text editor (F4).
-    pub fn edit(&self) {
+    pub fn edit(&self, command: &str, floats: bool) {
         let Some(info) = self.cursor_entry() else {
             return;
         };
@@ -1552,26 +1553,7 @@ impl Panel {
         let Some(file) = entry_file(&info) else {
             return;
         };
-        let problem = Problem::new("", dialogs::attempt::EDIT).file(label::FILE, &file);
-        let Some(editor) = gio::AppInfo::default_for_type("text/plain", false) else {
-            let problem = Problem { summary: dialogs::NO_TEXT_EDITOR.into(), ..problem }
-                .fact(label::CONTENT_TYPE, "text/plain")
-                .error_text(ErrorText::plain(dialogs::NO_APP_FOR_KIND));
-            return report::show(&self.root, problem);
-        };
-        let context = self.root.display().app_launch_context();
-        let address = uri_for_other_apps(&file).to_string();
-        match editor.launch_uris(&[address.as_str()], Some(&context)) {
-            Ok(()) => report::launched(&editor, &address),
-            Err(error) => {
-                let summary = dialogs::could_not_open_with(&info.display_name(), &editor.display_name());
-                let problem = Problem { summary, ..problem }
-                    .program(&editor)
-                    .fact(label::ADDRESS, &address)
-                    .error(&error);
-                report::show(&self.root, problem);
-            }
-        }
+        editor::open(&self.root, &info.display_name(), &file, command, floats);
     }
 
     /// Opens a terminal in the current folder (Shift+F4).

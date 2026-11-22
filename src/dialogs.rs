@@ -500,6 +500,19 @@ pub const NO_APP_FOR_KIND: &str = "No application for this kind of file";
 pub const DEFAULT_APP: &str = "the default app";
 /// The toast when F4 finds no app for text files.
 pub const NO_TEXT_EDITOR: &str = "No text editor is set up";
+/// How the editor command set in Preferences is called in a toast
+/// ("Could not open “a.txt” with the editor command").
+pub const EDITOR_COMMAND_NAME: &str = "the editor command";
+/// In the log, when the editor's window could not be floated.
+pub const EDITOR_NOT_FLOATED: &str = "Could not float the editor’s window";
+/// Preferences: the editor group.
+pub const EDITOR_GROUP: &str = "Editor";
+pub const EDITOR_GROUP_HINT: &str =
+    "F4 opens the file in the system’s text editor, or with a command of your own. \
+     Example: subl --new-window";
+pub const EDITOR_COMMAND_TITLE: &str = "Editor Command";
+pub const EDITOR_FLOATS_TITLE: &str = "Floating Editor Window";
+pub const EDITOR_FLOATS_HINT: &str = "A new editor window opens in the middle of the screen";
 /// The toast when Shift+F4 could not start the terminal.
 pub const NO_TERMINAL: &str = "Could not open a terminal";
 
@@ -622,6 +635,7 @@ pub mod attempt {
     pub const OPEN_ARGUMENT: &str = "Open a folder or file given to Kommander on start";
     pub const OPEN_DEFAULT: &str = "Open a file with the default app for its kind";
     pub const EDIT: &str = "Open a file in the text editor (F4)";
+    pub const FLOAT_EDITOR: &str = "Float the editor’s new window in the middle (Hyprland)";
     pub const TERMINAL: &str = "Open a terminal in a folder (Shift+F4)";
     pub const SAVE_FAVOURITES: &str = "Save the favourites to the bookmarks file";
     pub const READ_FAVOURITES: &str = "Read the favourites from the bookmarks file";

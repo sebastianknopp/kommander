@@ -4,6 +4,7 @@
 mod clipboard;
 mod dialogs;
 mod dnd;
+mod editor;
 mod fkeybar;
 mod jobs;
 mod layout;

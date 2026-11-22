@@ -174,6 +174,15 @@ Module map (`src/`):
   clipboard in GNOME Files's formats (`x-special/gnome-copied-files` and
   the file list), what a paste does (tested), and which files look cut.
 - `openwith.rs` — the Open With… dialog (apps for a file's type from GIO).
+- `editor.rs` — F4: opening a file in the text editor: the system's, or
+  the command from Preferences (`editor-command=`, split like a shell,
+  `%f` or the end takes the file's path; tested). On Hyprland, with
+  `editor-floats=` (default on), it listens on Hyprland's event socket
+  for the next window to open and has it floated, sized and centred
+  through `hyprctl eval` (Hyprland's Lua; the old `--batch` dispatchers
+  as a fallback, untested). Not the process started is followed but the
+  next window, because editors like Sublime hand the file to a running
+  copy.
 - `dnd.rs` — drag-and-drop rules (copy or move, where it lands), tested.
 - `jobs.rs` — runs copy/move requests one after another on a worker thread
   and passes events back to the main loop.

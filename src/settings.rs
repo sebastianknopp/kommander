@@ -183,6 +183,11 @@ pub struct Settings {
     pub single_panel: bool,
     /// The panel that was active last (0 left, 1 right).
     pub active_panel: usize,
+    /// The command F4 opens files with ("subl --new-window"); empty means
+    /// the system's text editor (see editor.rs).
+    pub editor_command: String,
+    /// On Hyprland, the editor's new window floats in the middle.
+    pub editor_floats: bool,
 }
 
 impl Default for Settings {
@@ -201,6 +206,8 @@ impl Default for Settings {
             panel_split: 0.5,
             single_panel: false,
             active_panel: 0,
+            editor_command: String::new(),
+            editor_floats: true,
         }
     }
 }
@@ -284,6 +291,8 @@ impl Settings {
             active_panel: string("active-panel")
                 .and_then(|v| PANEL_KEYS.iter().position(|panel| *panel == v))
                 .unwrap_or(defaults.active_panel),
+            editor_command: string("editor-command").map(|v| v.trim().to_string()).unwrap_or_default(),
+            editor_floats: boolean("editor-floats").unwrap_or(defaults.editor_floats),
         }
     }
 
@@ -302,6 +311,8 @@ impl Settings {
         file.set_string(GROUP, "panel-split", &format!("{:.3}", self.panel_split));
         file.set_boolean(GROUP, "single-panel", self.single_panel);
         file.set_string(GROUP, "active-panel", PANEL_KEYS[self.active_panel.min(1)]);
+        file.set_string(GROUP, "editor-command", &self.editor_command);
+        file.set_boolean(GROUP, "editor-floats", self.editor_floats);
         if !self.recent_servers.is_empty() {
             file.set_value(GROUP, "recent-servers", &string_list_value(&self.recent_servers));
         }
@@ -379,6 +390,9 @@ mod tests {
             panel_split: 0.3,
             single_panel: true,
             active_panel: 1,
+            // Quotes, a "%f" and a ";" must survive.
+            editor_command: r#"'/opt/My Editor/run' --new-window "%f"; x"#.into(),
+            editor_floats: false,
         };
         let text = settings.to_key_file().to_data();
         let file = glib::KeyFile::new();
@@ -392,7 +406,8 @@ mod tests {
         file.load_from_data(
             "[Kommander]\nicon-size=huge\nshow-hidden=maybe\nleft-sort=colour\nshow-favourites=2\n\
              look=purple\ncolours=pink\ntranslucent-window=yes\nwindow-width=wide\nwindow-height=-5\n\
-             window-maximized=very\npanel-split=wide\nsingle-panel=one\nactive-panel=middle\n",
+             window-maximized=very\npanel-split=wide\nsingle-panel=one\nactive-panel=middle\n\
+             editor-floats=sometimes\n",
             glib::KeyFileFlags::NONE,
         )
         .unwrap();

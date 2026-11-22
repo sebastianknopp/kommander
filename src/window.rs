@@ -78,6 +78,16 @@ struct State {
 }
 
 impl State {
+    /// F4: the file under `panel`'s cursor in the text editor, as set up
+    /// in Preferences (editor.rs).
+    fn edit(&self, panel: &Panel) {
+        let (command, floats) = {
+            let settings = self.settings.borrow();
+            (settings.editor_command.clone(), settings.editor_floats)
+        };
+        panel.edit(&command, floats);
+    }
+
     /// Makes panel `index` the active one. With `focus`, also moves the
     /// keyboard focus into it (not needed when it already got focus by a click).
     fn activate(&self, index: usize, focus: bool) {
@@ -1137,6 +1147,7 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
             let for_preview = Rc::downgrade(&state);
             let for_look = Rc::downgrade(&state);
             let for_translucent = Rc::downgrade(&state);
+            let for_editor = Rc::downgrade(&state);
             preferences::present(
                 &window,
                 &state.settings.borrow(),
@@ -1168,6 +1179,15 @@ fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, stat
                     theme::set_translucent(translucent);
                     if let Some(state) = for_translucent.upgrade() {
                         state.settings.borrow_mut().translucent = translucent;
+                        state.settings.borrow().save();
+                    }
+                },
+                move |change| {
+                    if let Some(state) = for_editor.upgrade() {
+                        match change {
+                            preferences::EditorChange::Command(command) => state.settings.borrow_mut().editor_command = command,
+                            preferences::EditorChange::Floats(floats) => state.settings.borrow_mut().editor_floats = floats,
+                        }
                         state.settings.borrow().save();
                     }
                 },
@@ -1256,7 +1276,7 @@ fn add_window_actions(
                 && !state.typing_path()
                 && !state.panels[state.active.get()].is_waiting()
             {
-                state.panels[state.active.get()].edit();
+                state.edit(&state.panels[state.active.get()]);
             }
         })
         .build();
@@ -2008,7 +2028,7 @@ fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, comman
                 state.toggle_preview();
             }
         }
-        Command::Edit => panel.edit(),
+        Command::Edit => state.edit(panel),
         Command::Rename => rename(state, panel),
         Command::OpenWith => {
             if let (Some(info), Some(file)) = (&target.entry, clicked) {
