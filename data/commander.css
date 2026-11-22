@@ -39,8 +39,16 @@ window.commander-look paned.panels-split > separator {
   background-color: var(--nc-quiet-line);
 }
 
+/* The sidebar is told apart by its darker ground, not by a line. Its
+ * dividers run nearly edge to edge. */
 window.commander-look .favourites {
-  border-right: 1px solid var(--nc-quiet-line);
+  border-right: none;
+  background-color: var(--sidebar-bg-color);
+}
+
+window.commander-look .favourites list > separator {
+  margin: 6px 3px;
+  background-color: var(--nc-quiet-line);
 }
 
 window.commander-look .panel > .location-stack,
@@ -118,7 +126,7 @@ window.commander-look .panel.preview > .path-strip {
 window.commander-look .favourites > .favourites-title {
   padding: 0 6px;
   border-bottom: none;
-  background-color: var(--nc-panel);
+  background-color: transparent;
   color: var(--nc-text);
 }
 

@@ -285,8 +285,11 @@ pub fn css(palette: &Palette) -> String {
 /// them only through the variables `commander_css` writes.
 mod nc {
     use super::Rgb;
-    /// The panels, the sidebar and the preview: deep navy.
+    /// The panels and the preview: deep navy.
     pub const NAVY: Rgb = Rgb(0x13, 0x23, 0x5f);
+    /// The favourites sidebar: a darker navy, so it reads as something
+    /// other than the two panels.
+    pub const NAVY_DEEP: Rgb = Rgb(0x0c, 0x17, 0x44);
     /// Preferences, shortcuts and About: a touch lighter than the panels.
     pub const NAVY_RAISED: Rgb = Rgb(0x1a, 0x2d, 0x70);
     /// Ordinary text: soft cyan.
@@ -340,8 +343,8 @@ pub fn commander_css() -> String {
         ("headerbar-bg-color", hex(BAR)),
         ("headerbar-backdrop-color", hex(BAR)),
         ("headerbar-fg-color", hex(BAR_TEXT)),
-        ("sidebar-bg-color", hex(NAVY)),
-        ("sidebar-backdrop-color", hex(NAVY)),
+        ("sidebar-bg-color", hex(NAVY_DEEP)),
+        ("sidebar-backdrop-color", hex(NAVY_DEEP)),
         ("sidebar-fg-color", hex(TEXT)),
         ("secondary-sidebar-bg-color", hex(NAVY)),
         ("secondary-sidebar-backdrop-color", hex(NAVY)),
