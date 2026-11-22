@@ -62,6 +62,14 @@ Files:
   monospace, flat states from the text colour), also embedded; loaded by
   `theme.rs` only in that look, on top of `style.css`, so it overrides
   rather than refactors it.
+- `data/commander.css` — the "Commander" look (a modern homage to Norton
+  Commander: line frames with the path set into the top edge, column
+  lines, cyan cursor bar, amber marks as text, F-keys as number + cyan
+  block, cyan menus, grey questions, red ones for what cannot be undone),
+  also embedded; loaded only in that look, after `omarchy.css` in the same
+  provider. Variables only (its palette comes from `theme.rs`). The
+  delete-for-good and quit questions carry the `destructive-question`
+  class for it.
 
 Module map (`src/`):
 - `main.rs` — app start-up: application ID, CSS, icon. Single instance
@@ -139,7 +147,8 @@ Module map (`src/`):
   the keys (full, "tight", keys only) and shows the fullest one that fits
   (measured, since the looks' fonts differ; a little slack against
   flicker; tested), each button with a tooltip from `dialogs.rs`. The slot
-  always keeps its full width.
+  always keeps its full width. In the Commander look `show_bare_numbers`
+  makes the key boxes say "5" instead of "F5" (the bar measures afresh).
 - `split.rs` — the draggable line between the two panels (a GtkPaned
   inside `panels_box`, which stays the outer container). The split is a
   proportion, worked out again whenever the room changes (window,
@@ -182,9 +191,11 @@ Module map (`src/`):
   and a fixed Network entry below them (nothing can be dropped onto it);
   dropping onto it and reordering (rules in `dnd.rs`). Its keys are sorted
   out in `window.rs` (`sidebar_key`).
-- `preferences.rs` — the Preferences dialog.
+- `preferences.rs` — the Preferences dialog (the Look is a drop-down;
+  without an Omarchy theme it offers only GNOME and Commander).
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),
-  including the look (`look=` gnome, omarchy-colours or omarchy; an old
+  including the look (`look=` gnome, omarchy-colours, omarchy or
+  commander; an old
   file's `colours=` still counts), the window's un-maximised size and whether it was maximised
   (saved on close, not while fullscreen), `panel-split` (the left panel's
   share, 0.05–0.95, otherwise half), `single-panel` and `active-panel`
@@ -192,8 +203,9 @@ Module map (`src/`):
   `recent-servers` (saved as
   soon as it changes; GLib's string-list escaping done by hand, since the
   Rust binding lacks `set_string_list`).
-- `theme.rs` — the look (Preferences: GNOME, Omarchy Colours, Omarchy;
-  both Omarchy looks fall back to GNOME without an Omarchy theme). Colours
+- `theme.rs` — the look (Preferences: GNOME, Omarchy Colours, Omarchy,
+  Commander; both Omarchy looks fall back to GNOME without an Omarchy
+  theme, Commander needs none). Colours
   from the Omarchy theme
   (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
   CSS builder) laid over libadwaita's colour variables, followed live by
@@ -203,7 +215,16 @@ Module map (`src/`):
   (added after `style.css`'s, before the colours', all at application
   priority, where the later provider wins whatever the selectors); and the
   translucent window and `omarchy-look` classes on the main window (rules in
-  `style.css` and `omarchy.css`).
+  `style.css` and `omarchy.css`). The Commander look: `omarchy.css` plus
+  `commander.css` in that provider, the fixed palette from
+  `commander_css()` (libadwaita's variables plus a few `--nc-*` ones;
+  tested, every text at least 4.5 : 1) in the colours' provider, dark
+  forced through `adw::StyleManager` while it is shown (the earlier choice
+  given back after), and both `omarchy-look` and `commander-look` on the
+  main window. `window.rs`'s `apply_look` treats it like the Omarchy look
+  and passes it on: bare F-key numbers, titles centred in the frames
+  (`PathBar::set_centred`, `Sidebar`/`Preview::set_title_centred`), column
+  separators and the Size column's "►UP◄"/"►DIR◄" (`Panel::set_look`).
 
 ## Conventions
 
@@ -225,6 +246,9 @@ Module map (`src/`):
   (only `theme.rs` reads it, and it only redefines those variables) or from
   libadwaita; `color-mix()` with `transparent` is fine. New styling should
   use the variables, never the theme's keys, so it works in both settings.
+  The one exception is the Commander look's fixed palette, written out
+  only in `theme.rs` (`mod nc`, `commander_css`); `commander.css` uses it
+  through the variables like everything else.
   (The one synchronous read on the main thread is the theme's small
   colors.toml at start-up, so the window never opens in the wrong colours.)
 - **UI is built in Rust code** (no .ui or Blueprint files); styling goes in
