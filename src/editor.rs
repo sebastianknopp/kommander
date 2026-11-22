@@ -177,20 +177,33 @@ fn start_default(widget: &gtk::Widget, name: &str, file: &gio::File) -> bool {
     }
 }
 
-/// Connects to Hyprland's event socket; its lines from now on.
-async fn listen(socket: &Path) -> Option<gio::DataInputStream> {
-    let address = gio::UnixSocketAddress::new(socket);
-    let connection = gio::SocketClient::new().connect_future(&address).await.ok()?;
-    // The stream keeps the connection alive.
-    Some(gio::DataInputStream::new(&connection.input_stream()))
+/// Hyprland's event socket, connected: its lines from now on. The
+/// connection has to be kept as long as they are read (dropping it closes
+/// the socket under the stream).
+struct Events {
+    lines: gio::DataInputStream,
+    _connection: gio::SocketConnection,
 }
 
-/// Waits for the next window to open and floats it; gives up after
-/// `WINDOW_WAIT`.
-async fn float_next_window(events: gio::DataInputStream) {
+async fn listen(socket: &Path) -> Option<Events> {
+    let address = gio::UnixSocketAddress::new(socket);
+    let connection = gio::SocketClient::new().connect_future(&address).await.ok()?;
+    Some(Events { lines: gio::DataInputStream::new(&connection.input_stream()), _connection: connection })
+}
+
+/// Waits for the next window to open and floats it.
+async fn float_next_window(events: Events) {
+    if let Some(address) = next_opened_window(events, WINDOW_WAIT).await {
+        float_window(&address).await;
+    }
+}
+
+/// The address of the next window Hyprland says has opened; None after
+/// `wait` without one, or when the socket closes.
+async fn next_opened_window(events: Events, wait: Duration) -> Option<String> {
     let next_window = async {
         loop {
-            match events.read_line_utf8_future(glib::Priority::DEFAULT).await {
+            match events.lines.read_line_utf8_future(glib::Priority::DEFAULT).await {
                 Ok(Some(line)) => {
                     if let Some(address) = opened_window(&line) {
                         return Some(address.to_string());
@@ -201,12 +214,9 @@ async fn float_next_window(events: gio::DataInputStream) {
         }
     };
     let next_window = std::pin::pin!(next_window);
-    let address = match future::select(next_window, glib::timeout_future(WINDOW_WAIT)).await {
+    match future::select(next_window, glib::timeout_future(wait)).await {
         Either::Left((address, _)) => address,
         Either::Right(_) => None,
-    };
-    if let Some(address) = address {
-        float_window(&address).await;
     }
 }
 
@@ -281,6 +291,53 @@ mod tests {
         assert_eq!(opened_window("activewindow>>foot,title"), None);
         assert_eq!(opened_window("openwindow>>,1,foot,x"), None);
         assert_eq!(opened_window("openwindow>>not hex,1,foot,x"), None);
+    }
+
+    /// A stand-in for Hyprland's event socket that says `lines`, slowly,
+    /// and what `next_opened_window` makes of it.
+    fn heard(lines: &'static [&'static str], wait: Duration) -> Option<String> {
+        use std::io::Write;
+        let folder = std::env::temp_dir().join(format!("kommander-editor-test-{}-{}", std::process::id(), lines.len()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let socket = folder.join("s");
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let hyprland = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for line in lines {
+                std::thread::sleep(Duration::from_millis(30));
+                if writeln!(stream, "{line}").is_err() {
+                    break;
+                }
+            }
+            // Kept open a while, as the real one never closes.
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let context = glib::MainContext::new();
+        let found = context
+            .with_thread_default(|| {
+                context.block_on(async {
+                    // In a function of its own, as in `open`: the connection
+                    // must outlive it.
+                    let events = listen(&socket).await.expect("connects");
+                    next_opened_window(events, wait).await
+                })
+            })
+            .unwrap();
+        hyprland.join().unwrap();
+        let _ = std::fs::remove_dir_all(&folder);
+        found
+    }
+
+    #[test]
+    fn the_next_opened_window_is_heard_on_the_socket() {
+        let lines = &["workspace>>2", "activewindow>>foot,x", "openwindow>>5654d1553ed0,5,sublime_text,a.txt", "openwindow>>ffff,1,foot,x"];
+        assert_eq!(heard(lines, Duration::from_secs(5)), Some("5654d1553ed0".into()));
+    }
+
+    #[test]
+    fn without_a_new_window_the_wait_ends() {
+        assert_eq!(heard(&["workspace>>2"], Duration::from_millis(150)), None);
     }
 
     #[test]
