@@ -11,14 +11,14 @@ you switch it, and otherwise stays out of your way.
 
 | | |
 | --- | --- |
-| ![The GNOME look, dark](docs/screenshots/main-gnome.png) | ![The GNOME look, light](docs/screenshots/main-gnome-light.png) |
-| ![Image preview](docs/screenshots/preview-image.png) | ![Code preview](docs/screenshots/preview-code.png) |
-| ![Right-click menu](docs/screenshots/context-menu.png) | ![Copy to the other panel](docs/screenshots/copy.png) |
-| ![Connect to Server](docs/screenshots/network.png) | |
+| ![The Commander look: a calm homage to Norton Commander](docs/screenshots/main-commander.png) | ![The GNOME look, dark](docs/screenshots/main-gnome.png) |
+| ![The GNOME look, light](docs/screenshots/main-gnome-light.png) | ![Image preview](docs/screenshots/preview-image.png) |
+| ![Code preview](docs/screenshots/preview-code.png) | ![Right-click menu](docs/screenshots/context-menu.png) |
+| ![Copy to the other panel](docs/screenshots/copy.png) | ![Connect to Server](docs/screenshots/network.png) |
 
 ## Features
 
-- **Two panels** side by side with a draggable split, or just one (Ctrl+1); Tab switches
+- **Two panels** side by side with a draggable split, or just one (Ctrl+1); Tab or arrows switch
 - **Copy (F5) and move (F6)** to the other panel, in the background, with progress and a queue
 - **Asks before replacing** a file: skip, replace or keep both
 - **Rename (F2), new folder (F7), trash (F8)** with Undo, delete for good (Shift+F8)
@@ -30,14 +30,14 @@ you switch it, and otherwise stays out of your way.
 - **Network list** of the computers and shares found around you
 - **Connect to Server** for smb, sftp, ftp and dav; remembers the last eight
 - **Right-click menu** on files, folders and empty space
-- **Open With**, your text editor (F4) and a terminal in the folder (Shift+F4)
+- **Your editor (F4)** in a floating window on Hyprland, Open With, and a terminal (Shift+F4)
 - **Cut, copy and paste** files, also to and from GNOME Files
 - **Drag and drop** between the panels and with other apps
 - **Type a path** (Ctrl+L) with Tab completion, or type a name to jump to it
 - **Copy a path** with Ctrl+Shift+C or a double-click on the path strip
 - **Slow folders** show a spinner and the time waited; Escape goes back
-- **Omarchy theme** followed live, in GNOME shapes or square and monospace like Omarchy's own apps
-- **Light and dark**, and an optional see-through window
+- **Three looks**: GNOME, Omarchy's own square style, or Norton Commander blue
+- **Omarchy theme** followed live, light and dark, and an optional see-through window
 
 ## Install
 
