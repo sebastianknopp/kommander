@@ -258,6 +258,11 @@ pub fn css(palette: &Palette) -> String {
     if let Some(orange) = orange {
         let _ = writeln!(out, "  --orange-3: {};", orange.hex());
     }
+    // Secondary text (sizes, dates, counts): stronger than libadwaita's
+    // 55%, which on a theme's soft text colour gets too faint to read.
+    if foreground.is_some() {
+        out.push_str("  --dim-opacity: 75%;\n");
+    }
     out.push_str("}\n");
     out
 }
@@ -556,6 +561,7 @@ green = "#879A39"
         assert!(css.contains("--sidebar-bg-color: #13141c;"));
         assert!(css.contains("--dialog-bg-color: #24283b;"));
         assert!(css.contains("--accent-bg-color: #7aa2f7;"));
+        assert!(css.contains("--dim-opacity: 75%;"));
         assert!(css.contains("--warning-color: #e0af68;"));
         assert!(css.contains("--orange-3: #eb927b;"));
         assert!(css.contains("--card-bg-color: color-mix(in srgb, #a9b1d6 8%, transparent);"));

@@ -23,7 +23,7 @@ paned.panels-split > separator {
   /* 2px less below, made up for by the thicker line: same height as before. */
   padding: 3px 12px 1px 12px;
   font-weight: bold;
-  color: color-mix(in srgb, var(--window-fg-color) 55%, transparent);
+  color: color-mix(in srgb, var(--window-fg-color) var(--dim-opacity), transparent);
   border-bottom: 3px solid transparent;
 }
 
@@ -305,7 +305,7 @@ paned.panels-split > separator {
   min-height: 28px;
   padding: 3px 12px 1px 18px;
   font-weight: bold;
-  color: color-mix(in srgb, var(--sidebar-fg-color) 55%, transparent);
+  color: color-mix(in srgb, var(--sidebar-fg-color) var(--dim-opacity), transparent);
   border-bottom: 3px solid transparent;
 }
 

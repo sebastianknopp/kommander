@@ -198,7 +198,8 @@ Module map (`src/`):
   (`$XDG_STATE_HOME/omarchy/current/theme/colors.toml`, tested parser and
   CSS builder) laid over libadwaita's colour variables, followed live by
   watching Omarchy's `current` folder (a theme switch replaces the `theme`
-  folder); the Omarchy look's `data/omarchy.css` in a provider of its own
+  folder); with them `--dim-opacity: 75%` (libadwaita's 55% is
+  too faint on a theme's soft text colour; the GNOME look keeps 55%); the Omarchy look's `data/omarchy.css` in a provider of its own
   (added after `style.css`'s, before the colours', all at application
   priority, where the later provider wins whatever the selectors); and the
   translucent window and `omarchy-look` classes on the main window (rules in

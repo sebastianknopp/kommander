@@ -35,7 +35,7 @@
   --om-divider: color-mix(in srgb, var(--window-fg-color) 12%, transparent);
   --om-input-line: color-mix(in srgb, var(--window-fg-color) 40%, transparent);
   --om-card-line: var(--window-fg-color);
-  --om-dim: color-mix(in srgb, var(--window-fg-color) 65%, transparent);
+  --om-dim: color-mix(in srgb, var(--window-fg-color) 75%, transparent);
 }
 
 /* --- Everywhere --- */
