@@ -223,8 +223,8 @@ Module map (`src/`):
   given back after), and both `omarchy-look` and `commander-look` on the
   main window. `window.rs`'s `apply_look` treats it like the Omarchy look
   and passes it on: bare F-key numbers, titles centred in the frames
-  (`PathBar::set_centred`, `Sidebar`/`Preview::set_title_centred`), column
-  separators and the Size column's "►UP◄"/"►DIR◄" (`Panel::set_look`).
+  (`PathBar::set_centred`, `Sidebar`/`Preview::set_title_centred`), and
+  the Size column's "►UP◄"/"►DIR◄" (`Panel::set_look`).
 
 ## Conventions
 
