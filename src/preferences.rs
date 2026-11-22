@@ -112,8 +112,9 @@ pub fn present(
     let preview = adw::PreferencesGroup::builder().title("Preview").build();
     preview.add(&preview_row);
 
-    // F4: the editor command (kept when Enter or the tick is pressed, so a
-    // half-typed command is never run) and, where Hyprland can do it, the
+    // F4: the editor command (kept as it is typed; F4 cannot be pressed
+    // while this dialog is open. No apply button: its icon is missing from
+    // Omarchy's Yaru icon themes) and, where Hyprland can do it, the
     // floating window.
     let editor = adw::PreferencesGroup::builder()
         .title(dialogs::EDITOR_GROUP)
@@ -122,11 +123,10 @@ pub fn present(
     let command_row = adw::EntryRow::builder()
         .title(dialogs::EDITOR_COMMAND_TITLE)
         .text(&settings.editor_command)
-        .show_apply_button(true)
         .build();
     command_row.add_css_class("monospace");
     let on_command = on_editor.clone();
-    command_row.connect_apply(move |row| on_command(EditorChange::Command(row.text().trim().to_string())));
+    command_row.connect_changed(move |row| on_command(EditorChange::Command(row.text().trim().to_string())));
     editor.add(&command_row);
     if crate::editor::can_float() {
         let floats_row = adw::SwitchRow::builder()
