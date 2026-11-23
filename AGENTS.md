@@ -134,7 +134,9 @@ Module map (`src/`):
   `gvfs-dnssd`/`gvfs-wsdd` when GIO lacks the `dns-sd`/`wsdd` schemes;
   tested) and the Connect to Server dialog.
 - `pathbar.rs` — the breadcrumbs; a double-click on the strip asks to copy
-  the folder's path, and the "Copied" pill that then flashes over it.
+  the folder's path, and the pill that then flashes over it ("Copied";
+  after Ctrl+R what reading the folder again changed, "Reloaded · 2 new,
+  1 gone", from `Panel::refreshed`, or the error if it failed).
 - `location.rs` — typing a path (Ctrl+L): the field that takes the
   breadcrumbs' place (a stack holding both), what typed text means
   (tested), Tab completion of folder names; going there through

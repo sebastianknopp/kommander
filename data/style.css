@@ -73,7 +73,8 @@ paned.panels-split > separator {
   padding: 0 1px;
 }
 
-/* "Copied" pill, flashed over the start of the path strip after Copy Path:
+/* The pill flashed at the end of the path strip ("Copied" after Copy Path,
+ * what changed after Ctrl+R):
  * a small libadwaita-style tag in the accent colours, readable on the tinted
  * active strip and the flat inactive one. Fades in quickly, out slowly. */
 .path-strip .copied-pill {

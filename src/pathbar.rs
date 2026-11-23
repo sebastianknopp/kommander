@@ -245,12 +245,14 @@ impl PathBar {
         self.on_double_clicked.replace(Some(Rc::new(f)));
     }
 
-    /// Flashes the "Copied" pill: it fades in, stays about a second and
-    /// fades out. Flashed again while showing, it starts over.
-    pub fn flash_copied(&self) {
+    /// Flashes the pill saying `text` ("Copied", or what Ctrl+R found): it
+    /// fades in, stays about a second and fades out. Flashed again while
+    /// showing, it starts over with the new text.
+    pub fn flash(&self, text: &str) {
         if let Some(timer) = self.pill_timer.take() {
             timer.remove();
         }
+        self.pill.set_label(text);
         self.pill.add_css_class("shown");
         let pill = self.pill.downgrade();
         let pill_timer = Rc::downgrade(&self.pill_timer);

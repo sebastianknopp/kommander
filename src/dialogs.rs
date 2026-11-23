@@ -483,6 +483,26 @@ pub const NOTHING_TO_PASTE: &str = "There is nothing on the clipboard to paste";
 /// The pill that flashes in a panel's path strip when a path was copied.
 pub const COPIED: &str = "Copied";
 
+/// The pill that flashes after Ctrl+R: what reading the folder again
+/// changed among the rows shown ("Reloaded · 2 new, 1 gone").
+pub fn reloaded(new: usize, gone: usize, changed: usize) -> String {
+    let parts: Vec<String> = [(new, "new"), (gone, "gone"), (changed, "changed")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, word)| format!("{count} {word}"))
+        .collect();
+    if parts.is_empty() {
+        "Reloaded · no changes".into()
+    } else {
+        format!("Reloaded · {}", parts.join(", "))
+    }
+}
+
+/// The toast when Ctrl+R could not read the folder again.
+pub fn could_not_reload(name: &str, reason: &str) -> String {
+    format!("Could not read “{name}” again: {reason}")
+}
+
 pub const OPEN_WITH_TITLE: &str = "Open With";
 pub const OPEN_WITH_DEFAULT: &str = "Default";
 pub const OPEN_WITH_OTHER_APPS: &str = "Other Apps";
@@ -632,6 +652,7 @@ pub mod attempt {
     use crate::ops::transfer::Kind;
 
     pub const OPEN_FOLDER: &str = "Open a folder in a panel";
+    pub const RELOAD: &str = "Read the shown folder again (Ctrl+R)";
     pub const OPEN_ARGUMENT: &str = "Open a folder or file given to Kommander on start";
     pub const OPEN_DEFAULT: &str = "Open a file with the default app for its kind";
     pub const EDIT: &str = "Open a file in the text editor (F4)";
@@ -1052,6 +1073,15 @@ pub fn confirm_quit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reload_pill_says_what_changed() {
+        assert_eq!(reloaded(0, 0, 0), "Reloaded · no changes");
+        assert_eq!(reloaded(2, 0, 0), "Reloaded · 2 new");
+        assert_eq!(reloaded(2, 1, 0), "Reloaded · 2 new, 1 gone");
+        assert_eq!(reloaded(0, 1, 3), "Reloaded · 1 gone, 3 changed");
+        assert_eq!(could_not_reload("Videos", "The share is gone"), "Could not read “Videos” again: The share is gone");
+    }
 
     fn check(name: &str, is_folder: bool, current: Option<&str>) -> NameCheck {
         let taken = ["Music", "notes.txt", "Photos"];

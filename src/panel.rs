@@ -425,7 +425,7 @@ impl Panel {
 
     /// Flashes "Copied" in the path strip.
     pub fn flash_copied(&self) {
-        self.path_bar.flash_copied();
+        self.path_bar.flash(dialogs::COPIED);
     }
 
     /// Calls `f` whenever the user sorts by another column or direction.
@@ -1231,7 +1231,7 @@ impl Panel {
             });
             return;
         }
-        self.read_again(&folder, trip);
+        self.read_again(&folder, trip, false);
     }
 
     /// After something was created, renamed, moved or deleted: where the
@@ -1244,27 +1244,30 @@ impl Panel {
             return;
         }
         if let Some(listing) = self.shown().filter(|listing| !listing.is_watched()) {
-            self.read_again(&listing.folder(), self.trip.get());
+            self.read_again(&listing.folder(), self.trip.get(), false);
         }
     }
 
     /// Reload (Ctrl+R): reads the shown folder again in the background and
     /// swaps it in when ready, cursor and marks staying where they are.
     /// For what others changed on a network share, which tells nobody.
+    /// Once read, a pill in the path strip says what changed (or the
+    /// error is reported), so a slow share shows when it is done.
     /// Not while on the way elsewhere.
     pub fn reload(self: &Rc<Self>) {
         if self.pending.borrow().is_some() {
             return;
         }
         if let Some(listing) = self.shown() {
-            self.read_again(&listing.folder(), self.trip.get());
+            self.read_again(&listing.folder(), self.trip.get(), true);
         }
     }
 
     /// Reads the shown `folder` afresh in the background; `refreshed` swaps
     /// it in, unless the panel has moved on from `trip` by then. A read
-    /// already under way is replaced.
-    fn read_again(self: &Rc<Self>, folder: &gio::File, trip: u64) {
+    /// already under way is replaced. `announce`: asked for with Ctrl+R,
+    /// so the outcome is shown.
+    fn read_again(self: &Rc<Self>, folder: &gio::File, trip: u64, announce: bool) {
         let fresh = Listing::new(folder);
         let weak = Rc::downgrade(self);
         let started = timing().then(Instant::now);
@@ -1274,7 +1277,7 @@ impl Panel {
                 && panel.trip.get() == trip
                 && let Some(refresh) = panel.refresh.take()
             {
-                panel.refreshed(&refresh.listing, started);
+                panel.refreshed(&refresh.listing, started, announce);
             }
         });
         self.refresh.replace(Some(Waiting { listing: fresh, handler: Some(handler) }));
@@ -1282,8 +1285,9 @@ impl Panel {
 
     /// The fresh read of the shown folder is complete: it replaces the
     /// shown listing, the cursor staying on the same file and marked files
-    /// staying marked. A read that failed changes nothing.
-    fn refreshed(&self, fresh: &Rc<Listing>, started: Option<Instant>) {
+    /// staying marked. A read that failed changes nothing (and says so if
+    /// `announce`d).
+    fn refreshed(&self, fresh: &Rc<Listing>, started: Option<Instant>, announce: bool) {
         if let Some(started) = started {
             eprintln!(
                 "kommander timing: {} ({} entries) read again after {:.1} ms",
@@ -1292,8 +1296,26 @@ impl Panel {
                 started.elapsed().as_secs_f64() * 1000.0
             );
         }
-        if fresh.error().is_some() {
+        if let Some(error) = fresh.error() {
+            if announce {
+                let folder = fresh.folder();
+                let name = folder.basename().map_or_else(
+                    || folder.parse_name().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                let summary = dialogs::could_not_reload(&name, &dialogs::reason(&error));
+                report::show(
+                    &self.root,
+                    Problem::new(&summary, dialogs::attempt::RELOAD).file(label::FOLDER, &folder).error(&error),
+                );
+            }
             return;
+        }
+        if announce && let Some(old) = self.shown() {
+            let filter = self.hidden_filter.clone();
+            let (new, gone, changed) =
+                compare_listings(old.model().upcast_ref(), fresh.model().upcast_ref(), |info| filter.match_(info));
+            self.path_bar.flash(&dialogs::reloaded(new, gone, changed));
         }
         // The cursor stays on its file, or goes to the one it is waiting
         // for (a folder just created, see `put_cursor_on`) if that is here.
@@ -2657,6 +2679,33 @@ fn format_date(date: &glib::DateTime) -> String {
     date.format(format).map(Into::into).unwrap_or_default()
 }
 
+/// How the rows of a folder read again (`fresh`) differ from those shown
+/// before (`old`), counting only rows `shown` lets through: how many are
+/// new, gone, and changed (another size or modification time).
+fn compare_listings(
+    old: &gio::ListModel,
+    fresh: &gio::ListModel,
+    shown: impl Fn(&gio::FileInfo) -> bool,
+) -> (usize, usize, usize) {
+    let rows = |model: &gio::ListModel| -> HashMap<PathBuf, (u64, u64)> {
+        (0..model.n_items())
+            .filter_map(|i| model.item(i).and_downcast::<gio::FileInfo>())
+            .filter(|info| shown(info))
+            .map(|info| {
+                // Asked for by name: rows of the Network list may lack them.
+                let size = info.attribute_uint64(gio::FILE_ATTRIBUTE_STANDARD_SIZE);
+                let modified = info.attribute_uint64(gio::FILE_ATTRIBUTE_TIME_MODIFIED);
+                (info.name(), (size, modified))
+            })
+            .collect()
+    };
+    let (old, fresh) = (rows(old), rows(fresh));
+    let new = fresh.keys().filter(|name| !old.contains_key(*name)).count();
+    let gone = old.keys().filter(|name| !fresh.contains_key(*name)).count();
+    let changed = fresh.iter().filter(|(name, row)| old.get(*name).is_some_and(|before| before != *row)).count();
+    (new, gone, changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2767,6 +2816,27 @@ mod tests {
         assert!(entry_file(&parent).is_none());
         assert!(entry_uri(&parent).is_none());
         assert!(!is_parent_entry(&info("..", true, 0, 0)));
+    }
+
+    #[test]
+    fn a_reload_counts_new_gone_and_changed_rows() {
+        let store = |infos: Vec<gio::FileInfo>| {
+            let store = gio::ListStore::new::<gio::FileInfo>();
+            store.extend_from_slice(&infos);
+            store.upcast::<gio::ListModel>()
+        };
+        let hidden = info(".cache", true, 0, 1);
+        hidden.set_is_hidden(true);
+        let old = store(vec![info("a.txt", false, 10, 1), info("b.txt", false, 20, 1), info("gone.txt", false, 5, 1), hidden]);
+        let fresh = store(vec![
+            info("a.txt", false, 10, 1),
+            info("b.txt", false, 25, 2),
+            info("new.txt", false, 1, 3),
+            info(".new-hidden", false, 1, 3),
+        ]);
+        let shown = |info: &gio::FileInfo| !info.is_hidden() && !info.name().to_string_lossy().starts_with('.');
+        assert_eq!(compare_listings(&old, &fresh, shown), (1, 1, 1));
+        assert_eq!(compare_listings(&old, &old, shown), (0, 0, 0));
     }
 
     fn info(name: &str, dir: bool, size: i64, modified: u64) -> gio::FileInfo {
