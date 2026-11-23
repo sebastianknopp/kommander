@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
 
 use crate::dialogs::{self, label};
 use crate::report::{self, Problem};
@@ -150,29 +150,36 @@ pub fn present(
         let name = name.to_string();
         let file = file.clone();
         let content_type = content_type.to_string();
+        let on_error: Rc<dyn Fn(Problem)> = Rc::new(on_error);
         Rc::new(move |row: &gtk::ListBoxRow| {
             let app = rows.borrow().iter().find(|(known, _)| known == row).map(|(_, app)| app.clone());
             let (Some(app), Some(dialog)) = (app, dialog.upgrade()) else {
                 return;
             };
             let context = dialog.display().app_launch_context();
+            let window = dialog.root().and_downcast::<gtk::Window>();
             dialog.close();
-            let address = crate::panel::uri_for_other_apps(&file).to_string();
-            match app.launch_uris(&[address.as_str()], Some(&context)) {
-                Ok(()) => report::launched(&app, &address),
-                Err(error) => {
-                    let summary = dialogs::could_not_open_with(&name, &app.display_name());
-                    let attempted = dialogs::attempt::open_with(&app.display_name());
-                    on_error(
-                        Problem::new(&summary, &attempted)
-                            .file(label::FILE, &file)
-                            .fact(label::CONTENT_TYPE, &content_type)
-                            .program(&app)
-                            .fact(label::ADDRESS, &address)
-                            .error(&error),
-                    );
+            let (name, file, content_type, on_error) = (name.clone(), file.clone(), content_type.clone(), on_error.clone());
+            glib::spawn_future_local(async move {
+                let summary = dialogs::could_not_open_with(&name, &app.display_name());
+                let attempted = dialogs::attempt::open_with(&app.display_name());
+                let problem = Problem::new(&summary, &attempted)
+                    .file(label::FILE, &file)
+                    .fact(label::CONTENT_TYPE, &content_type)
+                    .program(&app);
+                // A share dropped since the folder was listed: connected again.
+                if let Err(error) = crate::network::reconnect(&file, window.as_ref()).await {
+                    if !error.matches(gio::IOErrorEnum::FailedHandled) {
+                        on_error(problem.error(&error));
+                    }
+                    return;
                 }
-            }
+                let address = crate::panel::uri_for_other_apps(&file).to_string();
+                match app.launch_uris(&[address.as_str()], Some(&context)) {
+                    Ok(()) => report::launched(&app, &address),
+                    Err(error) => on_error(problem.fact(label::ADDRESS, &address).error(&error)),
+                }
+            });
         })
     };
 

@@ -114,6 +114,18 @@ pub fn open(widget: &impl IsA<gtk::Widget>, name: &str, file: &gio::File, comman
             Some(socket) => listen(&socket).await,
             None => None,
         };
+        // A share dropped since the folder was listed: connected again,
+        // which also gives the file its local path for the command.
+        let window = widget.root().and_downcast::<gtk::Window>();
+        if let Err(error) = crate::network::reconnect(&file, window.as_ref()).await {
+            if !error.matches(gio::IOErrorEnum::FailedHandled) {
+                let problem = Problem::new(&dialogs::could_not_open_with(&name, dialogs::EDITOR_COMMAND_NAME), dialogs::attempt::EDIT)
+                    .file(label::FILE, &file)
+                    .error(&error);
+                report::show(&widget, problem);
+            }
+            return;
+        }
         let started = match file.path() {
             Some(path) if !command.is_empty() => start_command(&widget, &name, &file, &command, &path),
             _ => start_default(&widget, &name, &file),

@@ -127,7 +127,9 @@ Module map (`src/`):
   servers, as in GNOME Files: what a row is (folder, file, or a pointer =
   shortcut/mountable with a target address; tested), `reach` (the one async
   "find out what this is, mounting first and following pointers" used by
-  Ctrl+L, pointer rows and the dialog), the recent-servers list (newest
+  Ctrl+L, pointer rows and the dialog), `reconnect` (before a file on a
+  share is handed to another app by Enter, F4 or Open With: a share that
+  has dropped since the folder was listed is connected again), the recent-servers list (newest
   first, no doubles, at most 8; tested), the empty-list hint (names
   `gvfs-dnssd`/`gvfs-wsdd` when GIO lacks the `dns-sd`/`wsdd` schemes;
   tested) and the Connect to Server dialog.

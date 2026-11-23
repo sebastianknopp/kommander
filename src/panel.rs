@@ -1474,7 +1474,14 @@ impl Panel {
         // app" there gives whatever handles smb:// links, not the video
         // player. So the app is chosen by the kind of file, as for local
         // files, and gets the address from `uri_for_other_apps`.
+        let window = self.root.root().and_downcast::<gtk::Window>();
         glib::spawn_future_local(async move {
+            if let Err(error) = network::reconnect(&file, window.as_ref()).await {
+                if !error.matches(gio::IOErrorEnum::FailedHandled) {
+                    failed(problem, &error);
+                }
+                return;
+            }
             let info = file
                 .query_info_future(
                     "standard::content-type",

@@ -137,9 +137,7 @@ pub async fn reach(file: &gio::File, parent: Option<&gtk::Window>) -> Result<Tar
         if let Err(error) = &info
             && error.matches(gio::IOErrorEnum::NotMounted)
         {
-            // As the favourites sidebar does for a share it lists.
-            let operation = gtk::MountOperation::new(parent);
-            file.mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation)).await?;
+            mount_enclosing(&file, parent).await?;
             info = query(file.clone()).await;
         }
         let info = info?;
@@ -156,6 +154,37 @@ pub async fn reach(file: &gio::File, parent: Option<&gtk::Window>) -> Result<Tar
         }
     }
     unreachable!("the last hop returns")
+}
+
+/// Connects the share `file` is on (asking for a password over `parent` if
+/// need be), as the favourites sidebar does for a share it lists. Already
+/// connected in the meantime counts as done.
+async fn mount_enclosing(file: &gio::File, parent: Option<&gtk::Window>) -> Result<(), glib::Error> {
+    let operation = gtk::MountOperation::new(parent);
+    match file.mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation)).await {
+        Err(error) if !error.matches(gio::IOErrorEnum::AlreadyMounted) => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Before a file is handed to another app (Enter, F4, Open With): if the
+/// share it is on has dropped since the folder was listed (a VPN switch,
+/// sleep), connects it again. The app gets only the address and cannot do
+/// that itself; without it the open fails with "not mounted". Local files
+/// are left alone; any other error shows up when the file is opened. An
+/// error with `gio::IOErrorEnum::FailedHandled` means the user cancelled
+/// the password question (nothing to report).
+pub async fn reconnect(file: &gio::File, parent: Option<&gtk::Window>) -> Result<(), glib::Error> {
+    if file.is_native() {
+        return Ok(());
+    }
+    let found = file
+        .query_info_future(gio::FILE_ATTRIBUTE_STANDARD_TYPE, gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT)
+        .await;
+    match found {
+        Err(error) if error.matches(gio::IOErrorEnum::NotMounted) => mount_enclosing(file, parent).await,
+        _ => Ok(()),
+    }
 }
 
 // --- Recently used server addresses ---
