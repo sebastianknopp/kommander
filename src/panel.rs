@@ -380,6 +380,7 @@ impl Panel {
     pub fn set_look(&self, look: Look) {
         let commander = look == Look::Commander;
         self.path_bar.set_centred(commander);
+        self.path_bar.set_pill_long(commander);
         for cell in self.marked.cells.borrow().iter().filter_map(|cell| cell.upgrade()) {
             if let (Some(label), Some(info)) = (
                 cell.child().filter(|child| child.has_css_class("size-cell")).and_downcast::<gtk::Label>(),

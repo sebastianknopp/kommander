@@ -427,3 +427,11 @@ dialog.alert .response-area > button.destructive-action:focus {
   outline: 3px solid var(--nc-focus);
   outline-offset: 2px;
 }
+
+/* The pill flashed over the path ("Copied", what Ctrl+R found): amber, the
+ * look's "here", since the accent cyan would vanish in the active path's
+ * cyan block. */
+window.commander-look .path-strip .copied-pill {
+  background-color: var(--nc-amber);
+  color: var(--nc-ink);
+}

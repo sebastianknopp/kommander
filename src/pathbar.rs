@@ -104,9 +104,10 @@ type ClickHandler = Rc<dyn Fn(&gio::File)>;
 /// Set later than the strip's own double-click watch is made, hence shared.
 type DoubleClickHandler = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
-/// How long the "Copied" pill stays at full strength (its fading in and
-/// out is set in style.css).
+/// How long the pill stays at full strength (its fading in and out is set
+/// in style.css); in the Commander look longer, `PILL_SHOWN_LONG`.
 const PILL_SHOWN: Duration = Duration::from_millis(1100);
+const PILL_SHOWN_LONG: Duration = Duration::from_millis(2000);
 
 pub struct PathBar {
     root: gtk::Box,
@@ -118,6 +119,8 @@ pub struct PathBar {
     pill: gtk::Label,
     /// Emptied by the timer itself when it fires.
     pill_timer: Rc<RefCell<Option<glib::SourceId>>>,
+    /// How long the pill stays (`PILL_SHOWN`, or `PILL_SHOWN_LONG`).
+    pill_shown: Cell<Duration>,
 }
 
 impl PathBar {
@@ -229,6 +232,7 @@ impl PathBar {
             on_double_clicked,
             pill,
             pill_timer: Rc::default(),
+            pill_shown: Cell::new(PILL_SHOWN),
         })
     }
 
@@ -237,6 +241,12 @@ impl PathBar {
     /// path still scrolls as before.
     pub fn set_centred(&self, centred: bool) {
         self.buttons.set_halign(if centred { gtk::Align::Center } else { gtk::Align::Fill });
+    }
+
+    /// Keeps the pill up longer (the Commander look, where it is amber on
+    /// a busy strip and easier to miss in a glance).
+    pub fn set_pill_long(&self, long: bool) {
+        self.pill_shown.set(if long { PILL_SHOWN_LONG } else { PILL_SHOWN });
     }
 
     /// Calls `f` when the strip is double-clicked anywhere but on an
@@ -256,7 +266,7 @@ impl PathBar {
         self.pill.add_css_class("shown");
         let pill = self.pill.downgrade();
         let pill_timer = Rc::downgrade(&self.pill_timer);
-        let timer = glib::timeout_add_local_once(PILL_SHOWN, move || {
+        let timer = glib::timeout_add_local_once(self.pill_shown.get(), move || {
             if let Some(pill_timer) = pill_timer.upgrade() {
                 pill_timer.take();
             }
