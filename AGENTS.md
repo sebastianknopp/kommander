@@ -94,7 +94,8 @@ Module map (`src/`):
   active panel's place (`preview_in_place`): the list has no focus then
   and `in_place_preview_key` steers it (Up/Down move its cursor, Escape
   or F3 closes, Tab flips).
-- `panel.rs` — one panel: breadcrumbs, file list (sorting, hidden files,
+- `panel.rs` — one panel: breadcrumbs, file list (sorting: names as in the Mac Finder, symbols before numbers
+  before letters, `name_key`, tested; hidden files,
   ".." row), status line, type-to-search, marking, drag source and drop.
   The list's minimum width does not hold the window wide (its scrolled
   window's horizontal policy is "external"); a narrow list drops the

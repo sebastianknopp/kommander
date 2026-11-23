@@ -2450,9 +2450,61 @@ fn folders_first(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
     is_dir(b).cmp(&is_dir(a))
 }
 
-/// By name, ignoring case (and sorting "file2" before "file10").
+/// By name as the Mac Finder sorts: symbols first, then numbers, then
+/// letters; case ignored, accents by the language's rules, and "file2"
+/// before "file10" (see `NameKey`).
 fn compare_names(a: &gio::FileInfo, b: &gio::FileInfo) -> Ordering {
     with_name_key(a, |a| with_name_key(b, |b| a.cmp(b)))
+}
+
+/// One piece of a name, in the order the kinds sort in: a symbol (space,
+/// "_", "#", "(" and so on, by character), a number (by value), a run of
+/// letters (by the language's collation, lower-cased).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NamePart {
+    Symbol(char),
+    /// The digits without leading zeros: shorter is smaller, then digit by
+    /// digit; then fewer leading zeros first ("2" before "02").
+    Number { digits: usize, value: String, zeros: usize },
+    Letters(glib::CollationKey),
+}
+
+/// What a name sorts by. GLib's filename collation (GNOME Files's) skips
+/// punctuation on its first pass, which files "_drafts" under d and
+/// "(old) photo" under o; here every character counts, as in the Finder.
+/// The name itself breaks ties, so the order never depends on chance.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NameKey {
+    parts: Vec<NamePart>,
+    name: String,
+}
+
+fn name_key(name: &str) -> NameKey {
+    let mut parts = Vec::new();
+    let mut chars = name.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut run = String::new();
+            while let Some(&d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+                run.push(d);
+                chars.next();
+            }
+            let value = run.trim_start_matches('0');
+            let value = if value.is_empty() { "0" } else { value };
+            parts.push(NamePart::Number { digits: value.len(), value: value.into(), zeros: run.len() - value.len() });
+        } else if c.is_alphanumeric() {
+            let mut run = String::new();
+            while let Some(&l) = chars.peek().filter(|l| l.is_alphanumeric() && !l.is_ascii_digit()) {
+                run.push(l);
+                chars.next();
+            }
+            parts.push(NamePart::Letters(glib::CollationKey::from(run.to_lowercase())));
+        } else {
+            parts.push(NamePart::Symbol(c));
+            chars.next();
+        }
+    }
+    NameKey { parts, name: name.into() }
 }
 
 /// Where `with_name_key` keeps a file's sort key.
@@ -2462,15 +2514,15 @@ const NAME_KEY: &str = "kommander-name-key";
 /// most of the time sorting a large folder takes, so it is worked out once
 /// per file and kept with it (as Nautilus does). A file whose name changes
 /// comes as a new FileInfo, with a new key.
-fn with_name_key<T>(info: &gio::FileInfo, f: impl FnOnce(&glib::FilenameCollationKey) -> T) -> T {
+fn with_name_key<T>(info: &gio::FileInfo, f: impl FnOnce(&NameKey) -> T) -> T {
     // SAFETY: only this function stores data under NAME_KEY, always a
-    // FilenameCollationKey, and never replaces or steals it, so the
-    // pointer stays valid for as long as `info` lives (beyond this call).
+    // NameKey, and never replaces or steals it, so the pointer stays
+    // valid for as long as `info` lives (beyond this call).
     unsafe {
-        if let Some(key) = info.data::<glib::FilenameCollationKey>(NAME_KEY) {
+        if let Some(key) = info.data::<NameKey>(NAME_KEY) {
             return f(key.as_ref());
         }
-        let key = glib::FilenameCollationKey::from(info.display_name().to_lowercase());
+        let key = name_key(&info.display_name());
         let result = f(&key);
         info.set_data(NAME_KEY, key);
         result
@@ -2866,6 +2918,22 @@ mod tests {
             folders_first(a, b).then(if descending { column.reverse() } else { column })
         });
         list.iter().map(|i| i.name().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn names_sort_as_in_the_finder() {
+        let mut names = vec![
+            "zebra.txt", "Apple", "a_c.txt", "ab.txt", "a-b.txt", "~backup", "_drafts", "#notes",
+            "(old) photo.jpg", "1 intro", "file10", "file2", "File3", "file02", "eagle",
+        ];
+        names.sort_by_key(|name| name_key(name));
+        assert_eq!(
+            names,
+            [
+                "#notes", "(old) photo.jpg", "_drafts", "~backup", "1 intro", "a-b.txt", "a_c.txt", "ab.txt",
+                "Apple", "eagle", "file2", "file02", "File3", "file10", "zebra.txt",
+            ]
+        );
     }
 
     #[test]
