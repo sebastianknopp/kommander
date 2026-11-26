@@ -59,8 +59,10 @@ paned.panels-split > separator {
   background: linear-gradient(to right, var(--strip-bg-color) 4px, transparent 32px);
 }
 
+/* The end, the current folder, never fades: the path always scrolls all
+ * the way to it (pathbar.rs), its padding included. */
 .path-strip scrolledwindow undershoot.right {
-  background: linear-gradient(to left, var(--strip-bg-color) 4px, transparent 32px);
+  background: none;
 }
 
 /* The inactive strip is dimmed as a whole already; dim earlier folders
@@ -490,19 +492,13 @@ window.main-window.translucent .panel.active .path-strip {
   --strip-bg-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
 }
 
-/* With no solid strip colour, a long path's cut-off end fades into what is
+/* With no solid strip colour, a long path's cut-off start fades into what is
  * drawn there instead: the panels' see-through background, with the active
  * strip's tint on top. */
 window.main-window.translucent .path-strip scrolledwindow undershoot.left {
   background:
     linear-gradient(to right, var(--strip-bg-color) 4px, transparent 32px),
     linear-gradient(to right, color-mix(in srgb, var(--view-bg-color) var(--translucent-alpha), transparent) 4px, transparent 32px);
-}
-
-window.main-window.translucent .path-strip scrolledwindow undershoot.right {
-  background:
-    linear-gradient(to left, var(--strip-bg-color) 4px, transparent 32px),
-    linear-gradient(to left, color-mix(in srgb, var(--view-bg-color) var(--translucent-alpha), transparent) 4px, transparent 32px);
 }
 
 window.main-window.translucent .preview .preview-text > text {

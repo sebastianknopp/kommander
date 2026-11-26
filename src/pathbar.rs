@@ -139,20 +139,17 @@ impl PathBar {
             .build();
 
         // Whenever the path's width changes, reveal its end (the current
-        // folder), as Nautilus does.
-        let weak_scrolled = scrolled.downgrade();
-        scrolled.hadjustment().connect_changed(move |_| {
-            let Some(scrolled) = weak_scrolled.upgrade() else {
-                return;
-            };
-            let viewport = scrolled.child().and_downcast::<gtk::Viewport>();
-            let last = viewport
-                .as_ref()
-                .and_then(|v| v.child())
-                .and_then(|buttons| buttons.last_child());
-            if let (Some(viewport), Some(last)) = (viewport, last) {
-                viewport.scroll_to(&last, None);
-            }
+        // folder), as Nautilus does: scrolled all the way, so the padding
+        // after it shows too and nothing is cut on the right. Done once the
+        // layout has settled: during it the viewport still clamps the value
+        // to its old width.
+        scrolled.hadjustment().connect_changed(|adjustment| {
+            let adjustment = adjustment.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(adjustment) = adjustment.upgrade() {
+                    adjustment.set_value(adjustment.upper() - adjustment.page_size());
+                }
+            });
         });
 
         // The mouse wheel scrolls the path sideways.
