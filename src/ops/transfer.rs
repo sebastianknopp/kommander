@@ -625,7 +625,7 @@ fn side(file: &gio::File, info: &gio::FileInfo) -> Side {
 
 /// "report.pdf" → "report (2).pdf"; folders and names without an extension
 /// get the number at the end.
-fn numbered(name: &Path, number: u32, is_folder: bool) -> PathBuf {
+pub(crate) fn numbered(name: &Path, number: u32, is_folder: bool) -> PathBuf {
     let Some(text) = name.to_str() else {
         // Not valid text: leave the bytes alone and append.
         let mut raw = name.as_os_str().to_owned();

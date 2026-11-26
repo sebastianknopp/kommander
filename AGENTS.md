@@ -212,11 +212,26 @@ Module map (`src/`):
   next window, because editors like Sublime hand the file to a running
   copy.
 - `dnd.rs` — drag-and-drop rules (copy or move, where it lands), tested.
-- `jobs.rs` — runs copy/move requests one after another on a worker thread
-  and passes events back to the main loop.
+- `jobs.rs` — runs copy/move requests and archive requests (`Task`) one
+  after another on a worker thread and passes events back to the main
+  loop (`Outcome::Transfer` or `Outcome::Archive` when one ends).
 - `ops/mod.rs` — small async GIO operations: new folder, rename, trash,
   delete, restore from trash.
 - `ops/transfer.rs` — the copy/move engine (blocking GIO on the worker).
+- `ops/archive.rs` — Compress… and Extract Here (right-click menu only):
+  making a .zip and unpacking one, with the `zip` crate over GIO streams
+  on the same worker (works on shares; the archive is written streamed,
+  extraction needs a seekable stream). Already compressed files (videos,
+  pictures, archives) are stored, the rest deflated. An archive unpacks
+  beside itself: one top item comes out as it is, several go into a
+  folder named after the archive; taken names get a number
+  (`transfer::numbered`); "__MACOSX" is skipped. Its own safety rules are
+  in its header comment (nothing replaced, nothing outside the target,
+  no links unpacked, half-written files removed); tested. `window.rs`
+  asks for the archive's name (`dialogs::compress`, name suggested as
+  GNOME Files does) and, when a job ends, reads the folder again
+  (`Panel::reread`: GTK's listing misses a file growing after it
+  appeared).
 - `progress.rs` — operations button, list and progress strip.
 - `preview.rs` — F3 preview pane, and the separate window via Sushi (D-Bus).
   Video plays through GtkVideo; sound through GStreamer's own GstPlay, and

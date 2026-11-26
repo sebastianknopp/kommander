@@ -8,6 +8,7 @@
 // trash:/// for entries whose original path and deletion time match the files
 // we trashed, and move those back.
 
+pub mod archive;
 pub mod transfer;
 
 use std::future::Future;

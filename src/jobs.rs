@@ -1,5 +1,6 @@
-// Runs copy and move operations on a worker thread, one after the other,
-// and passes what they report back to the window.
+// Runs copy and move operations (and packing and unpacking archives) on a
+// worker thread, one after the other, and passes what they report back to
+// the window.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The engine (ops::transfer) blocks while it works, so it gets a thread of
@@ -21,9 +22,35 @@ use futures_util::StreamExt;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
+use crate::ops::archive;
 use crate::ops::transfer::{self, Answer, Conflict, Kind, Progress, Request, Resolution, Summary};
 
 pub type JobId = u64;
+
+/// What a job does: copy or move, or make or unpack an archive.
+pub enum Task {
+    Transfer(Request),
+    Archive(archive::Request),
+}
+
+impl From<Request> for Task {
+    fn from(request: Request) -> Self {
+        Task::Transfer(request)
+    }
+}
+
+impl From<archive::Request> for Task {
+    fn from(request: archive::Request) -> Self {
+        Task::Archive(request)
+    }
+}
+
+/// How a job ended.
+pub enum Outcome {
+    /// `gone` are the sources of a move that are no longer where they were.
+    Transfer { summary: Summary, gone: Vec<gio::File> },
+    Archive(archive::Summary),
+}
 
 /// What the worker reports, in the order it happens.
 pub enum Event {
@@ -33,15 +60,14 @@ pub enum Event {
     /// A name clash. Answer through the sender; dropping it unanswered
     /// means Cancel.
     Conflict(JobId, Conflict, mpsc::Sender<Answer>),
-    /// The job is over. `gone` are the sources of a move that are no
-    /// longer where they were.
-    Finished { id: JobId, summary: Summary, gone: Vec<gio::File> },
+    /// The job is over.
+    Finished { id: JobId, outcome: Outcome },
 }
 
 /// One request on its way to the worker.
 struct Work {
     id: JobId,
-    request: Request,
+    task: Task,
     cancellable: gio::Cancellable,
 }
 
@@ -77,13 +103,14 @@ impl Jobs {
         Self { queue, pending, next_id: Cell::new(1) }
     }
 
-    /// Puts `request` in the queue and returns its job number.
-    pub fn submit(&self, request: Request) -> JobId {
+    /// Puts `task` in the queue and returns its job number.
+    pub fn submit(&self, task: impl Into<Task>) -> JobId {
+        let task = task.into();
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         let cancellable = gio::Cancellable::new();
         self.pending.borrow_mut().insert(id, cancellable.clone());
-        if self.queue.send(Work { id, request, cancellable }).is_err() {
+        if self.queue.send(Work { id, task, cancellable }).is_err() {
             // Only if the worker thread died; there is nothing to run it.
             self.pending.borrow_mut().remove(&id);
         }
@@ -119,24 +146,30 @@ impl Drop for Jobs {
 /// The worker thread: runs one request after the other until the queue's
 /// sending side (the `Jobs`) is gone.
 fn worker(work: mpsc::Receiver<Work>, events: channel::UnboundedSender<Event>) {
-    for Work { id, request, cancellable } in work {
+    for Work { id, task, cancellable } in work {
         // Nobody listens any more: nothing should start.
         if events.is_closed() {
             break;
         }
         let _ = events.unbounded_send(Event::Started(id));
         let mut delegate = Forward { id, events: events.clone() };
-        let summary = transfer::run(&request, &cancellable, &mut delegate);
-        let gone = match request.kind {
-            Kind::Move => request
-                .sources
-                .iter()
-                .filter(|source| !source.query_exists(gio::Cancellable::NONE))
-                .cloned()
-                .collect(),
-            Kind::Copy => Vec::new(),
+        let outcome = match task {
+            Task::Transfer(request) => {
+                let summary = transfer::run(&request, &cancellable, &mut delegate);
+                let gone = match request.kind {
+                    Kind::Move => request
+                        .sources
+                        .iter()
+                        .filter(|source| !source.query_exists(gio::Cancellable::NONE))
+                        .cloned()
+                        .collect(),
+                    Kind::Copy => Vec::new(),
+                };
+                Outcome::Transfer { summary, gone }
+            }
+            Task::Archive(request) => Outcome::Archive(archive::run(&request, &cancellable, &mut delegate)),
         };
-        let _ = events.unbounded_send(Event::Finished { id, summary, gone });
+        let _ = events.unbounded_send(Event::Finished { id, outcome });
     }
 }
 
@@ -211,9 +244,10 @@ mod tests {
                             let answer = Answer { resolution: Resolution::Replace, apply_to_all: false };
                             reply.send(answer).unwrap();
                         }
-                        Event::Finished { id, summary, gone } => {
+                        Event::Finished { id, outcome: Outcome::Transfer { summary, gone } } => {
                             log.push(format!("end {id} {} {}", summary.done.len(), gone.len()))
                         }
+                        Event::Finished { .. } => unreachable!("no archives here"),
                     }
                 });
                 let file = |p: &str| gio::File::for_path(dir.join(p));
@@ -261,7 +295,7 @@ mod tests {
                 // The reply sender is dropped without an answer, as when the
                 // window closes while the question is open.
                 let jobs = Jobs::new(move |event| {
-                    if let Event::Finished { summary, .. } = event {
+                    if let Event::Finished { outcome: Outcome::Transfer { summary, .. }, .. } = event {
                         cancelled_inner.set(Some(summary.cancelled));
                     }
                 });

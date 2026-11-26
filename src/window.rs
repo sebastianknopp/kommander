@@ -14,6 +14,7 @@ use gtk::{gdk, gio, glib};
 use crate::clipboard::{self, Clipboard, PastePlan};
 use crate::jobs::{self, JobId, Jobs};
 use crate::listings::Listings;
+use crate::ops::archive::{self, Kind as ArchiveKind};
 use crate::ops::transfer::{Answer, Conflict, Kind, Request, Resolution, Summary};
 use crate::menu::{self, Command};
 use crate::panel::{MenuTarget, Panel, entry_file};
@@ -57,6 +58,8 @@ struct State {
     jobs: Jobs,
     operations: Operations,
     transfers: RefCell<HashMap<JobId, Transfer>>,
+    /// The archives being made or unpacked (Compress…, Extract Here).
+    archives: RefCell<HashMap<JobId, ArchiveJob>>,
     /// The name clash question on screen, if any.
     conflict: RefCell<Option<PendingConflict>>,
     /// The window closes as soon as the cancelled operations have stopped.
@@ -470,6 +473,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
                 }
             }),
             transfers: RefCell::default(),
+            archives: RefCell::default(),
             conflict: RefCell::default(),
             quitting: Cell::new(false),
             asking_quit: Cell::new(false),
@@ -553,7 +557,7 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
         let Some(state) = state_weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let running = state.transfers.borrow().len();
+        let running = state.running();
         if running > 0 {
             if !state.quitting.get() && !state.asking_quit.get() {
                 state.ask_quit(running);
@@ -2029,6 +2033,7 @@ fn show_menu(state: &Rc<State>, index: usize, target: MenuTarget) {
         count: target.files.len(),
         can_paste: state.clipboard.has_files(),
         network: panel.is_network_list(),
+        zips: on == menu::On::File && !target.files.is_empty() && target.files.iter().all(is_zip),
     };
     let at = target.at;
     let state_weak = Rc::downgrade(state);
@@ -2116,7 +2121,96 @@ fn run_command(state: &Rc<State>, panel: &Rc<Panel>, target: &MenuTarget, comman
             }
         },
         Command::NewFolder => new_folder(state, panel),
+        Command::Compress => {
+            let single_is_folder = target.entry.as_ref().is_some_and(|info| info.file_type() == gio::FileType::Directory);
+            compress(state, panel, files, single_is_folder)
+        }
+        Command::Extract => extract(state, panel, files),
     }
+}
+
+/// Whether `file` is a .zip archive (by its name, as the menu decides
+/// whether to offer Extract Here).
+fn is_zip(file: &gio::File) -> bool {
+    file.basename().is_some_and(|name| name.to_string_lossy().to_lowercase().ends_with(".zip"))
+}
+
+/// What a running Compress… or Extract Here needs to know when it ends.
+struct ArchiveJob {
+    kind: ArchiveKind,
+    /// The names of the files asked for, and the files.
+    names: Vec<String>,
+    sources: Vec<gio::File>,
+    /// The panel it was asked for in, and its folder, where the archive
+    /// or what it unpacked into lands.
+    panel: Rc<Panel>,
+    folder: gio::File,
+    /// Compress: the new archive's name.
+    archive_name: Option<String>,
+}
+
+/// Compress…: asks for the archive's name, then packs `files` into it, in
+/// the panel's folder beside them (as GNOME Files does).
+/// `single_is_folder`: the one file asked for is a folder (for the name
+/// suggested).
+fn compress(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>, single_is_folder: bool) {
+    if files.is_empty() || refused_in_network(state, panel) {
+        return;
+    }
+    let Some(folder) = panel.folder() else {
+        return;
+    };
+    let names: Vec<String> = files.iter().map(file_name).collect();
+    let existing = panel.names();
+    let suggested = dialogs::suggested_archive(&names, single_is_folder, |name| existing.contains(name));
+    let (parent, state, panel) = (state.panels_box.clone(), state.clone(), panel.clone());
+    let taken = existing.clone();
+    dialogs::compress(&parent, &names.clone(), &suggested, existing, move |typed| {
+        let name = dialogs::archive_file_name(&typed);
+        // Typed without ".zip", and with it the name is taken.
+        if taken.contains(&name) {
+            return state.toast(dialogs::NAME_TAKEN);
+        }
+        let request = archive::Request::Compress { sources: files.clone(), archive: folder.child(&name) };
+        start_archive(&state, &panel, &folder, request, &names, files.clone(), Some(name));
+    });
+}
+
+/// Extract Here: unpacks the .zip `files` beside them, in the panel's folder.
+fn extract(state: &Rc<State>, panel: &Rc<Panel>, files: Vec<gio::File>) {
+    if files.is_empty() || refused_in_network(state, panel) {
+        return;
+    }
+    let Some(folder) = panel.folder() else {
+        return;
+    };
+    let names: Vec<String> = files.iter().map(file_name).collect();
+    let request = archive::Request::Extract { archives: files.clone(), dest_dir: folder.clone() };
+    start_archive(state, panel, &folder, request, &names, files, None);
+}
+
+/// Puts Compress or Extract Here in the operations queue.
+fn start_archive(
+    state: &Rc<State>,
+    panel: &Rc<Panel>,
+    folder: &gio::File,
+    request: archive::Request,
+    names: &[String],
+    sources: Vec<gio::File>,
+    archive_name: Option<String>,
+) {
+    let kind = request.kind();
+    let id = state.jobs.submit(request);
+    state.operations.add(id, &dialogs::archive_title(kind, names));
+    let job = ArchiveJob {
+        kind,
+        names: names.to_vec(),
+        sources,
+        panel: panel.clone(),
+        folder: folder.clone(),
+        archive_name,
+    };
+    state.archives.borrow_mut().insert(id, job);
 }
 
 /// Copy Path: puts the paths of `files` on the clipboard as text and
@@ -2183,7 +2277,12 @@ impl State {
             jobs::Event::Started(id) => self.operations.started(id),
             jobs::Event::Progress(id, progress) => self.operations.update(id, &progress),
             jobs::Event::Conflict(id, conflict, reply) => self.ask_conflict(id, &conflict, reply),
-            jobs::Event::Finished { id, summary, gone } => self.transfer_finished(id, &summary, &gone),
+            jobs::Event::Finished { id, outcome: jobs::Outcome::Transfer { summary, gone } } => {
+                self.transfer_finished(id, &summary, &gone)
+            }
+            jobs::Event::Finished { id, outcome: jobs::Outcome::Archive(summary) } => {
+                self.archive_finished(id, &summary)
+            }
         }
     }
 
@@ -2260,7 +2359,61 @@ impl State {
             });
         }
 
-        if self.quitting.get() && self.transfers.borrow().is_empty() {
+        if self.quitting.get() && self.running() == 0 {
+            self.close_window();
+        }
+    }
+
+    /// How many operations are queued or running.
+    fn running(&self) -> usize {
+        self.transfers.borrow().len() + self.archives.borrow().len()
+    }
+
+    /// Compress… or Extract Here has ended: says how (the details if
+    /// something failed), and puts the panel's cursor on what was made.
+    fn archive_finished(&self, id: JobId, summary: &archive::Summary) {
+        self.operations.remove(id);
+        let Some(job) = self.archives.borrow_mut().remove(&id) else {
+            return;
+        };
+        let made: Vec<String> = summary.created.iter().map(file_name).collect();
+        let text = dialogs::archived(
+            job.kind,
+            &job.names,
+            &made,
+            summary.failed.len(),
+            summary.cancelled,
+            summary.stopped.as_ref(),
+        );
+        if summary.failed.is_empty() && summary.stopped.is_none() {
+            self.toast(&text);
+        } else {
+            let attempted = dialogs::attempt::archive(job.kind, &job.names, job.archive_name.as_deref());
+            let sources: Vec<String> = job.sources.iter().map(report::location).collect();
+            let mut problem = Problem::new(&text, &attempted)
+                .file(label::FOLDER, &job.folder)
+                .fact(label::SOURCES, &sources.join("\n"));
+            if let Some(error) = &summary.stopped {
+                problem = problem.error(error);
+            }
+            for (what, error) in &summary.failed {
+                problem = problem.failure_named(what, error);
+            }
+            self.report(problem);
+        }
+        // The cursor goes to what was made, once it shows (`put_cursor_on`).
+        if let Some(first) = summary.created.first().filter(|_| !summary.cancelled) {
+            let name = first.basename().unwrap_or_default();
+            if_showing(&job.panel, &Some(job.folder.clone()), |panel| panel.put_cursor_on(name.clone()));
+        }
+        // Read again even where watched: the archive (or a file unpacked
+        // from one) grew after it appeared, which GTK's listing misses.
+        for panel in &self.panels {
+            if panel.folder().is_some_and(|shown| shown.equal(&job.folder)) {
+                panel.reread();
+            }
+        }
+        if self.quitting.get() && self.running() == 0 {
             self.close_window();
         }
     }
@@ -2279,12 +2432,13 @@ impl State {
                 return;
             }
             state.quitting.set(true);
-            let ids: Vec<JobId> = state.transfers.borrow().keys().copied().collect();
+            let ids: Vec<JobId> =
+                state.transfers.borrow().keys().chain(state.archives.borrow().keys()).copied().collect();
             for id in ids {
                 state.cancel_transfer(id);
             }
             // Everything may have ended while the question was open.
-            if state.transfers.borrow().is_empty() {
+            if state.running() == 0 {
                 state.close_window();
             }
         });

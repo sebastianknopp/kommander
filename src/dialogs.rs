@@ -1,6 +1,6 @@
 // The dialogs of the file operations (New Folder, Rename, Move to Trash,
-// Delete Permanently, Copy and Move with their name clash question) and the
-// wording of their messages.
+// Delete Permanently, Copy and Move with their name clash question,
+// Compress…) and the wording of their messages.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Name checks, their messages and the preselected part of a name follow
@@ -13,10 +13,14 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
+use crate::ops::archive::Kind as ArchiveKind;
 use crate::ops::transfer::{Answer, Conflict, Kind, Progress, Resolution, Side, Summary};
 
 /// Longest file name most file systems allow, in bytes.
 const NAME_MAX: usize = 255;
+
+/// Said when a name asked for is in use.
+pub const NAME_TAKEN: &str = "A file or folder with that name already exists";
 
 /// Whether a name typed into the New Folder or Rename dialog can be used.
 #[derive(Debug, PartialEq, Eq)]
@@ -70,7 +74,7 @@ pub fn check_name(
         });
     }
     if current != Some(name) && exists(name) {
-        return invalid("A file or folder with that name already exists");
+        return invalid(NAME_TAKEN);
     }
     if name.starts_with('.') {
         return NameCheck::Note("Names starting with “.” are hidden");
@@ -274,6 +278,76 @@ pub fn transferred(summary: &Summary, names: &[String], dest: &str) -> String {
             "{done} of {} {participle}, {skipped} skipped, {failed} failed: {reason}",
             files(total)
         ),
+    }
+}
+
+// --- Archives (see ops/archive.rs) ---
+
+/// The words for packing or unpacking: "Compress", "compressed", "Compressing".
+fn archive_words(kind: ArchiveKind) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        ArchiveKind::Compress => ("Compress", "compressed", "Compressing"),
+        ArchiveKind::Extract => ("Extract", "extracted", "Extracting"),
+    }
+}
+
+/// The name Compress… suggests, as GNOME Files does: one file or folder
+/// gives its name without its extension ("report.pdf" → "report.zip",
+/// "Photos" → "Photos.zip"), several give "Archive.zip"; numbered while
+/// `taken` ("Archive (2).zip").
+pub fn suggested_archive(names: &[String], single_is_folder: bool, taken: impl Fn(&str) -> bool) -> String {
+    let stem = match names {
+        [name] => {
+            let (start, end) = stem_range(name, single_is_folder);
+            let stem: String = name.chars().skip(start as usize).take((end - start) as usize).collect();
+            if stem.is_empty() { name.clone() } else { stem }
+        }
+        _ => "Archive".into(),
+    };
+    let mut name = format!("{stem}.zip");
+    let mut number = 2;
+    while taken(&name) {
+        name = format!("{stem} ({number}).zip");
+        number += 1;
+    }
+    name
+}
+
+/// The archive name typed into Compress…, with ".zip" added if it lacks it.
+pub fn archive_file_name(typed: &str) -> String {
+    if typed.to_lowercase().ends_with(".zip") { typed.to_string() } else { format!("{typed}.zip") }
+}
+
+/// Title of a running Compress or Extract Here: "Compressing 3 files",
+/// "Extracting “Photos.zip”".
+pub fn archive_title(kind: ArchiveKind, names: &[String]) -> String {
+    let (_, _, doing) = archive_words(kind);
+    format!("{doing} {}", name_or_count(names))
+}
+
+/// The toast when Compress or Extract Here has ended. `names` are the
+/// files asked for; `made` the names of what was made (the archive, or
+/// what the archives unpacked into).
+pub fn archived(kind: ArchiveKind, names: &[String], made: &[String], failed: usize, cancelled: bool, stopped: Option<&glib::Error>) -> String {
+    let (verb, participle, _) = archive_words(kind);
+    if cancelled {
+        return format!("{verb} cancelled");
+    }
+    if let Some(error) = stopped {
+        return match names {
+            [name] => format!("Could not {} “{name}”: {}", verb.to_lowercase(), reason(error)),
+            _ => format!("{verb} stopped: {}", reason(error)),
+        };
+    }
+    let left_out = match failed {
+        0 => String::new(),
+        1 => ", 1 file left out".into(),
+        _ => format!(", {failed} files left out"),
+    };
+    match (kind, made) {
+        (ArchiveKind::Compress, [archive]) => format!("“{archive}” created{left_out}"),
+        (ArchiveKind::Extract, [made]) => format!("Extracted into “{made}”{left_out}"),
+        _ => format!("{} {participle}{left_out}", name_or_count(names)),
     }
 }
 
@@ -686,7 +760,7 @@ pub fn launched(program: &str, command: &str, address: &str) -> String {
 
 /// What was being done when something failed, for the details.
 pub mod attempt {
-    use super::{name_or_count, transfer_words};
+    use super::{name_or_count, transfer_words, ArchiveKind};
     use crate::ops::transfer::Kind;
 
     pub const OPEN_FOLDER: &str = "Open a folder in a panel";
@@ -739,6 +813,14 @@ pub mod attempt {
         format!("{verb} {} to “{dest}”", name_or_count(names))
     }
 
+    /// "Compress 3 files into “Archive.zip”", "Extract “Photos.zip”".
+    pub fn archive(kind: ArchiveKind, names: &[String], archive: Option<&str>) -> String {
+        match (kind, archive) {
+            (ArchiveKind::Compress, Some(archive)) => format!("Compress {} into “{archive}”", name_or_count(names)),
+            _ => format!("{} {}", super::archive_words(kind).0, name_or_count(names)),
+        }
+    }
+
     pub fn open_with(app: &str) -> String {
         format!("Open a file with {app} (Open With)")
     }
@@ -774,6 +856,35 @@ pub fn new_folder(
         },
         existing,
         on_create,
+    );
+}
+
+/// Compress…: asks for the archive's name, starting with `suggested`
+/// (its name part selected). `existing` are the names in the folder;
+/// `on_compress` gets the name typed (see `archive_file_name`).
+pub fn compress(
+    parent: &impl IsA<gtk::Widget>,
+    names: &[String],
+    suggested: &str,
+    existing: HashSet<String>,
+    on_compress: impl Fn(String) + 'static,
+) {
+    let heading = match names {
+        [name] => format!("Compress “{name}”"),
+        _ => format!("Compress {} Files", names.len()),
+    };
+    name_dialog(
+        parent,
+        NameDialog {
+            heading: &heading,
+            entry_title: "Archive Name",
+            accept: "Compress",
+            name: suggested,
+            is_folder: false,
+            current: None,
+        },
+        existing,
+        on_compress,
     );
 }
 
@@ -1112,6 +1223,44 @@ pub fn confirm_quit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_wording() {
+        let one = vec!["report.pdf".to_string()];
+        let photos = vec!["Photos".to_string()];
+        let three: Vec<String> = ["a", "b", "c"].map(String::from).into();
+        let free = |_: &str| false;
+        assert_eq!(suggested_archive(&one, false, free), "report.zip");
+        assert_eq!(suggested_archive(&photos, true, free), "Photos.zip");
+        assert_eq!(suggested_archive(&["backup.tar.gz".into()], false, free), "backup.zip");
+        assert_eq!(suggested_archive(&[".bashrc".into()], false, free), ".bashrc.zip");
+        assert_eq!(suggested_archive(&three, false, free), "Archive.zip");
+        let taken = |name: &str| ["Archive.zip", "Archive (2).zip"].contains(&name);
+        assert_eq!(suggested_archive(&three, false, taken), "Archive (3).zip");
+
+        assert_eq!(archive_file_name("Photos"), "Photos.zip");
+        assert_eq!(archive_file_name("Photos.ZIP"), "Photos.ZIP");
+
+        use ArchiveKind::*;
+        assert_eq!(archive_title(Compress, &three), "Compressing 3 files");
+        assert_eq!(archive_title(Extract, &["Photos.zip".into()]), "Extracting “Photos.zip”");
+        let made = |name: &str| vec![name.to_string()];
+        assert_eq!(archived(Compress, &three, &made("Archive.zip"), 0, false, None), "“Archive.zip” created");
+        assert_eq!(
+            archived(Compress, &three, &made("Archive.zip"), 2, false, None),
+            "“Archive.zip” created, 2 files left out"
+        );
+        assert_eq!(archived(Extract, &made("Photos.zip"), &made("Photos (2)"), 0, false, None), "Extracted into “Photos (2)”");
+        assert_eq!(archived(Extract, &three, &three, 1, false, None), "3 files extracted, 1 file left out");
+        assert_eq!(archived(Extract, &three, &[], 0, true, None), "Extract cancelled");
+        let broken = glib::Error::new(gtk::gio::IOErrorEnum::InvalidData, "It isn’t a zip archive, or it is damaged");
+        assert_eq!(
+            archived(Extract, &made("x.zip"), &[], 0, false, Some(&broken)),
+            "Could not extract “x.zip”: It isn’t a zip archive, or it is damaged"
+        );
+        assert_eq!(attempt::archive(Compress, &three, Some("Archive.zip")), "Compress 3 files into “Archive.zip”");
+        assert_eq!(attempt::archive(Extract, &made("x.zip"), None), "Extract “x.zip”");
+    }
 
     #[test]
     fn the_reload_pill_says_what_changed() {

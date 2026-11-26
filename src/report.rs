@@ -104,6 +104,13 @@ impl Problem {
         self
     }
 
+    /// A failure of something named `what` that has no address of its own
+    /// (a file inside an archive: "Photos.zip › a.jpg").
+    pub fn failure_named(mut self, what: &str, error: &glib::Error) -> Self {
+        self.failures.push((what.into(), ErrorText::from_error(error)));
+        self
+    }
+
     /// The program that was (to be) started: its name, desktop file and
     /// command line.
     pub fn program(self, app: &gio::AppInfo) -> Self {

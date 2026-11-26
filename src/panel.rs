@@ -1382,6 +1382,19 @@ impl Panel {
         }
     }
 
+    /// Reads the shown folder again in the background, quietly, even if it
+    /// is watched: GTK's listing hears of a file being added, but not of it
+    /// growing afterwards, so a file written in place (an archive) would
+    /// keep the size it had when it appeared.
+    pub fn reread(self: &Rc<Self>) {
+        if self.pending.borrow().is_some() || self.unreachable.get() {
+            return;
+        }
+        if let Some(listing) = self.shown() {
+            self.read_again(&listing.folder(), self.trip.get(), Reread::Quiet);
+        }
+    }
+
     /// Reload (Ctrl+R): reads the shown folder again in the background and
     /// swaps it in when ready, cursor and marks staying where they are.
     /// For what others changed on a network share, which tells nobody.

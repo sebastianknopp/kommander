@@ -17,6 +17,10 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_10", "gtk_v4_24
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 sourceview = { version = "0.11", package = "sourceview5" }
+# Compress… and Extract Here (src/ops/archive.rs). Only the common
+# compressions, all in pure Rust: deflate (what everyone writes) and
+# deflate64 (Windows's Explorer writes it for big files).
+zip = { version = "9.8", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
 poppler = { version = "0.26", package = "poppler-rs" }
 # Sound in the preview is played with GStreamer's own player; see the note
 # at the top of src/preview.rs for why not with GTK's.

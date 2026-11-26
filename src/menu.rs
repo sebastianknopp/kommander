@@ -5,7 +5,8 @@
 // The grouping follows Nautilus's context menus (GPL-3.0-or-later,
 // src/resources/menu/nautilus-files-view-context-menus.ui): opening first,
 // then the clipboard and transfers (Nautilus: Cut, Copy, Move to…, Copy
-// to…), then renaming, Paste Into Folder and deleting; on empty space New
+// to…), then renaming, Paste Into Folder and deleting, then Extract Here
+// and Compress… (Nautilus has them after renaming); on empty space New
 // Folder and the terminal, then Paste. Copy Path (as text) sits with the
 // clipboard items. Items show the key that does the same
 // from the keyboard. The items run through the window (see window.rs,
@@ -42,9 +43,13 @@ pub enum Command {
     Delete,
     AddFavourite,
     NewFolder,
+    /// Pack the files acted on into a .zip (asks for its name).
+    Compress,
+    /// Unpack the .zip files acted on next to them.
+    Extract,
 }
 
-const COMMANDS: [Command; 17] = [
+const COMMANDS: [Command; 19] = [
     Command::Open,
     Command::OpenWith,
     Command::Preview,
@@ -62,6 +67,8 @@ const COMMANDS: [Command; 17] = [
     Command::Delete,
     Command::AddFavourite,
     Command::NewFolder,
+    Command::Compress,
+    Command::Extract,
 ];
 
 impl Command {
@@ -85,6 +92,8 @@ impl Command {
             Command::Delete => "delete",
             Command::AddFavourite => "add-favourite",
             Command::NewFolder => "new-folder",
+            Command::Compress => "compress",
+            Command::Extract => "extract",
         }
     }
 }
@@ -113,6 +122,8 @@ pub struct Context {
     /// The panel shows the Network list, where nothing can be created,
     /// changed, pasted or copied to.
     pub network: bool,
+    /// Every file acted on is a .zip archive (Extract Here is offered).
+    pub zips: bool,
 }
 
 /// One menu item: its label (with "_" before the mnemonic), the action it
@@ -218,6 +229,13 @@ pub fn sections(context: &Context) -> Vec<Vec<Item>> {
     change.push(item("Mo_ve to Trash", Trash, Some("Delete")));
     change.push(item("_Delete Permanently…", Delete, Some("<Shift>Delete")));
     sections.push(change);
+
+    let mut archive = Vec::new();
+    if context.zips {
+        archive.push(item("E_xtract Here", Extract, None));
+    }
+    archive.push(item("Compre_ss…", Compress, None));
+    sections.push(archive);
 
     if folder {
         sections.push(vec![item("Add to _Favourites", AddFavourite, None)]);
@@ -332,26 +350,36 @@ mod tests {
 
     #[test]
     fn a_file_row() {
-        let context = Context { on: On::File, count: 1, can_paste: true, network: false };
+        let context = Context { on: On::File, count: 1, can_paste: true, network: false, zips: false };
         assert_eq!(
             labels(context),
             [
                 vec!["_Open", "Open _With…", "P_review", "_Edit"],
                 vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                 vec!["Rena_me…", "Mo_ve to Trash", "_Delete Permanently…"],
+                vec!["Compre_ss…"],
             ]
         );
     }
 
     #[test]
+    fn zip_files_can_be_extracted() {
+        for count in [1, 3] {
+            let context = Context { on: On::File, count, can_paste: true, network: false, zips: true };
+            assert_eq!(labels(context).last().unwrap(), &vec!["E_xtract Here", "Compre_ss…"]);
+        }
+    }
+
+    #[test]
     fn a_folder_row() {
-        let context = Context { on: On::Folder, count: 1, can_paste: false, network: false };
+        let context = Context { on: On::Folder, count: 1, can_paste: false, network: false, zips: false };
         assert_eq!(
             labels(context),
             [
                 vec!["_Open", "Open _With…", "P_review", "Open Termi_nal Here"],
                 vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                 vec!["Rena_me…", "Paste _Into Folder", "Mo_ve to Trash", "_Delete Permanently…"],
+                vec!["Compre_ss…"],
                 vec!["Add to _Favourites"],
             ]
         );
@@ -364,13 +392,14 @@ mod tests {
     #[test]
     fn several_marked_files_leave_out_single_file_items() {
         for on in [On::File, On::Folder] {
-            let context = Context { on, count: 3, can_paste: true, network: false };
+            let context = Context { on, count: 3, can_paste: true, network: false, zips: false };
             assert_eq!(
                 labels(context),
                 [
                     vec!["_Open", "P_review"],
                     vec!["Cu_t", "_Copy", "_Paste", "Copy Pat_h", "Cop_y to Other Panel", "Move to Other P_anel"],
                     vec!["Mo_ve to Trash", "_Delete Permanently…"],
+                    vec!["Compre_ss…"],
                 ]
             );
         }
@@ -378,7 +407,7 @@ mod tests {
 
     #[test]
     fn empty_space_and_the_parent_row() {
-        let context = Context { on: On::Background, count: 0, can_paste: true, network: false };
+        let context = Context { on: On::Background, count: 0, can_paste: true, network: false, zips: false };
         assert_eq!(
             labels(context),
             [
@@ -400,18 +429,18 @@ mod tests {
     fn the_network_list_offers_no_file_operations() {
         // A computer or share: open it or bookmark where it points.
         for network in [true, false] {
-            let context = Context { on: On::Pointer, count: 1, can_paste: true, network };
+            let context = Context { on: On::Pointer, count: 1, can_paste: true, network, zips: true };
             assert_eq!(labels(context), [vec!["_Open"], vec!["Add to _Favourites"]]);
         }
         // Empty space there: Connect to Server instead of New Folder and Paste.
-        let context = Context { on: On::Background, count: 0, can_paste: true, network: true };
+        let context = Context { on: On::Background, count: 0, can_paste: true, network: true, zips: false };
         let actions: Vec<String> =
             sections(&context).into_iter().flatten().map(|item| item.action).collect();
         assert_eq!(actions, ["win.connect-server", "win.reload", "win.show-hidden"]);
         // Anything else listed there can only be opened (or bookmarked).
-        let context = Context { on: On::Folder, count: 1, can_paste: true, network: true };
+        let context = Context { on: On::Folder, count: 1, can_paste: true, network: true, zips: false };
         assert_eq!(labels(context), [vec!["_Open"], vec!["Add to _Favourites"]]);
-        let context = Context { on: On::File, count: 2, can_paste: true, network: true };
+        let context = Context { on: On::File, count: 2, can_paste: true, network: true, zips: false };
         assert_eq!(labels(context), [vec!["_Open"]]);
     }
 
@@ -419,7 +448,7 @@ mod tests {
     fn mnemonics_are_unique_in_each_menu() {
         let all = [On::File, On::Folder, On::Pointer, On::Background];
         for (on, network) in all.iter().flat_map(|&on| [(on, false), (on, true)]) {
-            let context = Context { on, count: 1, can_paste: true, network };
+            let context = Context { on, count: 1, can_paste: true, network, zips: true };
             let mut letters: Vec<char> = sections(&context)
                 .into_iter()
                 .flatten()
@@ -437,7 +466,7 @@ mod tests {
 
     #[test]
     fn items_show_their_keys() {
-        let context = Context { on: On::File, count: 1, can_paste: true, network: false };
+        let context = Context { on: On::File, count: 1, can_paste: true, network: false, zips: false };
         let all: Vec<Item> = sections(&context).into_iter().flatten().collect();
         let accel = |label: &str| all.iter().find(|item| item.label == label).unwrap().accel;
         assert_eq!(accel("Cu_t"), Some("<Control>x"));

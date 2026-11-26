@@ -29,7 +29,7 @@ you switch it, and otherwise stays out of your way.
 - **Drives and USB sticks** in the sidebar, with an eject button
 - **Network list** of the computers and shares found around you
 - **Connect to Server** for smb, sftp, ftp and dav; remembers the last eight
-- **Right-click menu** on files, folders and empty space
+- **Zip and unzip** from the right-click menu: Compress… and Extract Here, also on shares
 - **Your editor (F4)** in a floating window on Hyprland, Open With, and a terminal (Shift+F4)
 - **Cut, copy and paste** files, also to and from GNOME Files
 - **Drag and drop** between the panels and with other apps
