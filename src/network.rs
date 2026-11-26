@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -34,6 +35,10 @@ pub const MOST_RECENT_SERVERS: usize = 8;
 /// How many pointers in a row are followed (a found computer can point to
 /// a service that points to the server) before giving up.
 const MOST_HOPS: usize = 4;
+
+/// How often connecting a dropped share again is tried while gvfs is still
+/// letting go of the old connection, a second apart.
+const RECONNECT_TRIES: u32 = 4;
 
 /// The discovery add-ons of gvfs: the address scheme each adds to GIO
 /// (the network list asks them for "dns-sd://local/" and "wsdd:///") and
@@ -124,7 +129,9 @@ pub async fn reach(file: &gio::File, parent: Option<&gtk::Window>) -> Result<Tar
         gio::FILE_ATTRIBUTE_STANDARD_TYPE,
         gio::FILE_ATTRIBUTE_STANDARD_TARGET_URI
     );
-    let mut file = file.clone();
+    // Already connected under another name of the computer: through that
+    // connection, so no second one opens.
+    let mut file = on_connected_share(file);
     for hop in 0..=MOST_HOPS {
         let query = |file: gio::File| {
             let attributes = attributes.clone();
@@ -187,11 +194,140 @@ pub async fn reconnect(file: &gio::File, parent: Option<&gtk::Window>) -> Result
     }
 }
 
+/// Connects the share `folder` is on again after the connection dropped
+/// (a VPN switch, sleep), for a panel that was showing it. gvfs takes a
+/// moment to let go of a dropped share ("Backend currently unmounting"):
+/// then this waits a second and tries again, a few times. Done once the
+/// folder answers. An error with `gio::IOErrorEnum::FailedHandled` means
+/// the user cancelled the password question.
+pub async fn reconnect_folder(folder: &gio::File, parent: Option<&gtk::Window>) -> Result<(), glib::Error> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let result = match mount_enclosing(folder, parent).await {
+            Ok(()) => folder
+                .query_info_future(gio::FILE_ATTRIBUTE_STANDARD_TYPE, gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT)
+                .await
+                .map(|_| ()),
+            Err(error) => Err(error),
+        };
+        match result {
+            Err(error) if error.matches(gio::IOErrorEnum::NotMounted) && tries < RECONNECT_TRIES => {
+                glib::timeout_future(Duration::from_secs(1)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether `error` says the connection to a server is gone or can't be
+/// made (rather than that something on it is wrong, such as a missing file
+/// or a refused permission): then the share is connected again, or the
+/// panel says it can't be reached.
+pub fn lost_connection(error: &glib::Error) -> bool {
+    use gio::IOErrorEnum as E;
+    [
+        E::NotMounted,
+        E::TimedOut,
+        E::HostNotFound,
+        E::HostUnreachable,
+        E::NetworkUnreachable,
+        E::ConnectionRefused,
+        E::BrokenPipe,
+        E::NotConnected,
+    ]
+    .into_iter()
+    .any(|code| error.matches(code))
+}
+
+// --- The same share under another name ---
+
+/// A network address taken apart, the computer's name made comparable:
+/// lower case, and without the ".local" that computers found on the
+/// network carry ("pinky-one" and "Pinky-One.local" are one computer).
+struct Address {
+    /// "smb://user@pinky-one:445", spelled comparably.
+    server: String,
+    /// The path, still %-encoded, without a final "/".
+    path: String,
+}
+
+/// None for addresses without a computer (local files, the trash, the
+/// Network list).
+fn address(uri: &str) -> Option<Address> {
+    let parsed = glib::Uri::parse(uri, glib::UriFlags::ENCODED).ok()?;
+    let host = parsed.host()?.to_lowercase();
+    let host = host.strip_suffix(".local").unwrap_or(&host);
+    if host.is_empty() {
+        return None;
+    }
+    let user = parsed.userinfo().map(|user| format!("{user}@")).unwrap_or_default();
+    let port = if parsed.port() > 0 { format!(":{}", parsed.port()) } else { String::new() };
+    let server = format!("{}://{user}{host}{port}", parsed.scheme().to_lowercase());
+    Some(Address { server, path: parsed.path().trim_end_matches('/').to_string() })
+}
+
+/// What tells a network share apart, whatever the address calls its
+/// computer: the server (see `Address`) and the first folder of the path,
+/// the share. "smb://pinky-one.local/films/2024" and "smb://Pinky-One/films/"
+/// are on the same share. None for local places and GIO's own lists.
+pub fn share_key(uri: &str) -> Option<String> {
+    let address = address(uri)?;
+    let share = address.path.split('/').find(|part| !part.is_empty()).unwrap_or_default();
+    Some(format!("{}/{share}", address.server))
+}
+
+/// The computer's name in `uri`, as shown to people: without the ".local"
+/// and the port ("pinky-two"). None for local places.
+pub fn server_name(uri: &str) -> Option<String> {
+    let parsed = glib::Uri::parse(uri, glib::UriFlags::ENCODED).ok()?;
+    let host = parsed.host()?;
+    let host = host.strip_suffix(".local").unwrap_or(&host);
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// `uri` on the share whose root is `root`, spelled as `root` spells it:
+/// "smb://pinky-one/films/2024" with the root "smb://pinky-one.local/films/"
+/// is "smb://pinky-one.local/films/2024". None unless both are on the same
+/// share (`share_key`).
+fn respelled(uri: &str, root: &str) -> Option<String> {
+    if share_key(uri)? != share_key(root)? {
+        return None;
+    }
+    let path = address(uri)?.path;
+    // What follows the share's own folder.
+    let rest = path.trim_start_matches('/').split_once('/').map_or("", |(_, rest)| rest);
+    let root = root.trim_end_matches('/');
+    Some(if rest.is_empty() { format!("{root}/") } else { format!("{root}/{rest}") })
+}
+
+/// `file`, on a share already connected under another name of its
+/// computer (connected as "smb://pinky-one.local/films", asked for as
+/// "smb://pinky-one/films/2024"): its address through that connection, so
+/// that no second connection to the same share opens (each would get a
+/// row of its own in the sidebar). Otherwise `file` itself.
+pub fn on_connected_share(file: &gio::File) -> gio::File {
+    if file.is_native() {
+        return file.clone();
+    }
+    let uri = file.uri();
+    gio::VolumeMonitor::get()
+        .mounts()
+        .into_iter()
+        .filter(|mount| !mount.is_shadowed())
+        .find_map(|mount| respelled(&uri, &mount.root().uri()))
+        .map_or_else(|| file.clone(), |uri| gio::File::for_uri(&uri))
+}
+
 // --- Recently used server addresses ---
 
-/// The same address, give or take a final "/".
+/// The same address, give or take a final "/" and the way its computer is
+/// spelled ("smb://pinky-one" and "smb://pinky-one.local/" are one).
 fn same_address(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/') == b.trim_end_matches('/')
+    match (address(a), address(b)) {
+        (Some(a), Some(b)) => a.server == b.server && a.path == b.path,
+        _ => a.trim_end_matches('/') == b.trim_end_matches('/'),
+    }
 }
 
 /// `recent` (newest first) with `address` put first, no other copy of it,
@@ -599,5 +735,66 @@ mod tests {
         assert_eq!(missing_discovery(&half), ["gvfs-wsdd"]);
         let both = ["file", "wsdd", "network", "dns-sd"];
         assert!(missing_discovery(&both).is_empty());
+    }
+
+    #[test]
+    fn one_share_whatever_its_computer_is_called() {
+        let key = share_key("smb://pinky-one.local/network-share/ua-video");
+        assert_eq!(key.as_deref(), Some("smb://pinky-one/network-share"));
+        assert_eq!(share_key("smb://Pinky-One/network-share/"), key);
+        assert_eq!(share_key("SMB://pinky-one/network-share"), key);
+        // Another share, another computer, another user or port: another key.
+        assert_ne!(share_key("smb://pinky-one/other"), key);
+        assert_ne!(share_key("smb://pinky-two/network-share"), key);
+        assert_ne!(share_key("smb://anna@pinky-one/network-share"), key);
+        assert_ne!(share_key("sftp://pinky-one:2222/network-share"), share_key("sftp://pinky-one/network-share"));
+        // A server's root has an empty share.
+        assert_eq!(share_key("smb://nas/").as_deref(), Some("smb://nas/"));
+        // Nothing for places without a computer.
+        assert_eq!(share_key("file:///home/me"), None);
+        assert_eq!(share_key("trash:///"), None);
+        assert_eq!(share_key("network:///"), None);
+    }
+
+    #[test]
+    fn server_names_as_shown() {
+        assert_eq!(server_name("smb://pinky-one.local/share").as_deref(), Some("pinky-one"));
+        assert_eq!(server_name("sftp://me@pi:2222/home").as_deref(), Some("pi"));
+        assert_eq!(server_name("file:///home"), None);
+        assert_eq!(server_name("network:///"), None);
+    }
+
+    #[test]
+    fn addresses_through_the_connected_spelling() {
+        let root = "smb://pinky-one.local/network-share/";
+        assert_eq!(
+            respelled("smb://pinky-one/network-share/ua%20video/2024", root).as_deref(),
+            Some("smb://pinky-one.local/network-share/ua%20video/2024")
+        );
+        assert_eq!(respelled("smb://pinky-one/network-share", root).as_deref(), Some(root));
+        assert_eq!(respelled("smb://pinky-one/network-share/", root).as_deref(), Some(root));
+        assert_eq!(respelled("smb://pinky-one/other/x", root), None);
+        assert_eq!(respelled("file:///tmp", root), None);
+    }
+
+    #[test]
+    fn recent_servers_know_one_computer_by_two_names() {
+        let recent = vec!["smb://pinky-one".to_string(), "smb://pinky-two".to_string()];
+        assert_eq!(remember_server(&recent, "smb://pinky-one.local/"), ["smb://pinky-one.local/", "smb://pinky-two"]);
+        assert_eq!(forget_server(&recent, "smb://Pinky-One.local"), ["smb://pinky-two"]);
+        // Different folders on one share stay apart.
+        let shares = vec!["smb://nas/music".to_string()];
+        assert_eq!(remember_server(&shares, "smb://nas/films"), ["smb://nas/films", "smb://nas/music"]);
+    }
+
+    #[test]
+    fn lost_connections() {
+        let error = |code| glib::Error::new(code, "x");
+        assert!(lost_connection(&error(gio::IOErrorEnum::NotMounted)));
+        assert!(lost_connection(&error(gio::IOErrorEnum::TimedOut)));
+        assert!(lost_connection(&error(gio::IOErrorEnum::HostUnreachable)));
+        assert!(!lost_connection(&error(gio::IOErrorEnum::PermissionDenied)));
+        assert!(!lost_connection(&error(gio::IOErrorEnum::NotFound)));
+        assert!(!lost_connection(&error(gio::IOErrorEnum::FailedHandled)));
     }
 }

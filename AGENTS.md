@@ -111,6 +111,22 @@ Module map (`src/`):
   through (`waiting_key`); the file actions, F4/Shift+F4, Ctrl+D, the
   right-click menu, drags and drops do nothing there, and F5/F6 into a
   waiting panel are refused with a toast.
+  A share that dropped (VPN switch, sleep; a `network::lost_connection`
+  error on reading or going in, or its mount removed without the eject
+  button) is connected again by itself (`reconnect`, through
+  `network::reconnect_folder`) and the folder read afresh
+  (`Reread::Reconnected`, pill "Reconnected to pinky-two · …"); panels
+  stay put instead of going home. If that fails, the list is greyed
+  (`unreachable-list`) under a page saying the computer can't be reached,
+  with Try Again and Back (`show_unreachable`; Back leads to
+  `before_share`, the folder shown before that share, or home). It tries
+  again by itself when GIO's network monitor reports a change or the
+  share is mounted elsewhere. `is_waiting()` is true then too, so every
+  check that blocks actions while waiting blocks them here; `is_unreachable()`
+  picks `window.rs`'s `unreachable_key` (Enter/Ctrl+R try again,
+  Escape/Backspace back, Tab, F10); F5/F6 into it are refused with a
+  toast. Ctrl+R's pill names the server on network folders ("Reloaded
+  from pinky-two · no changes").
 - `listings.rs` — one folder's listing (read in the background), the
   recently visited folders both panels share (local ones kept up to date by
   GTK, others read again on return), and file icons by name (no file is
@@ -130,8 +146,15 @@ Module map (`src/`):
   "find out what this is, mounting first and following pointers" used by
   Ctrl+L, pointer rows and the dialog), `reconnect` (before a file on a
   share is handed to another app by Enter, F4 or Open With: a share that
-  has dropped since the folder was listed is connected again), the recent-servers list (newest
-  first, no doubles, at most 8; tested), the empty-list hint (names
+  has dropped since the folder was listed is connected again),
+  `reconnect_folder` (a panel's dropped share, retried while gvfs still
+  says "Backend currently unmounting"), `lost_connection` (which errors
+  mean the connection is gone; tested), `share_key`/`server_name` (one
+  share whatever its computer is called: lower case, ".local" dropped;
+  tested), `on_connected_share` (`reach` goes through a share already
+  connected under another spelling, so no second connection opens), the
+  recent-servers list (newest first, no doubles even spelled differently,
+  at most 8; tested), the empty-list hint (names
   `gvfs-dnssd`/`gvfs-wsdd` when GIO lacks the `dns-sd`/`wsdd` schemes;
   tested) and the Connect to Server dialog.
 - `pathbar.rs` — the breadcrumbs; a double-click on the strip asks to copy
@@ -205,7 +228,12 @@ Module map (`src/`):
   read, watched and written back), the drives from GIO's volume monitor
   and a fixed Network entry below them (nothing can be dropped onto it);
   dropping onto it and reordering (rules in `dnd.rs`). Its keys are sorted
-  out in `window.rs` (`sidebar_key`).
+  out in `window.rs` (`sidebar_key`). Network shares are listed once per
+  `network::share_key` (by the share's name, the computer after it as for
+  favourites), and mounts about to be unmounted (`going`) are left out.
+  `connect_location_gone` says whether the eject button did it: then
+  panels in it go home; a share that dropped by itself keeps them
+  (`Panel::connection_lost`).
 - `preferences.rs` — the Preferences dialog (the Look is a drop-down;
   without an Omarchy theme it offers only GNOME and Commander).
 - `settings.rs` — `~/.config/kommander/settings.ini` (GLib key file),

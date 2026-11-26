@@ -716,6 +716,12 @@ pub fn build(app: &adw::Application, files: &[gio::File]) {
             return sidebar_key(&window_state, key, modifiers);
         }
 
+        // While the panel's share can't be reached, its list is greyed:
+        // only Try Again and the keys that go somewhere else get through.
+        if panel.is_unreachable() {
+            return unreachable_key(&window_state, key, modifiers);
+        }
+
         // While the panel waits for a slow folder, its files are out of
         // sight: only the keys that go somewhere else get through.
         if panel.is_waiting() {
@@ -1006,6 +1012,32 @@ fn waiting_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> gl
     glib::Propagation::Stop
 }
 
+/// A key pressed while the active panel's share can't be reached (the
+/// page over its greyed list, see `Panel::show_unreachable`). Enter and
+/// Ctrl+R try again; Escape and Backspace go back to where the panel was
+/// before the share (or home); Tab goes to the other panel; F10 opens the
+/// main menu. Everything that would act on the greyed files does nothing,
+/// as while waiting (`waiting_key`).
+fn unreachable_key(state: &State, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+    use gdk::Key;
+    let panel = &state.panels[state.active.get()];
+    let plain = !modifiers.intersects(any_modifier());
+    let ctrl = modifiers & !gdk::ModifierType::LOCK_MASK == gdk::ModifierType::CONTROL_MASK;
+    match key {
+        Key::Return | Key::KP_Enter if plain => panel.try_again(),
+        _ if ctrl && key.to_lower() == Key::r => panel.try_again(),
+        Key::Escape | Key::BackSpace if plain => panel.leave_unreachable(),
+        Key::Tab | Key::ISO_Left_Tab | Key::KP_Tab
+            if !modifiers.intersects(any_modifier() & !gdk::ModifierType::SHIFT_MASK) =>
+        {
+            state.activate(1 - state.active.get(), true)
+        }
+        Key::F10 if plain => return glib::Propagation::Proceed,
+        _ => {}
+    }
+    glib::Propagation::Stop
+}
+
 /// A key pressed while the preview stands in the place of the active
 /// panel's list (single-panel mode in a narrow window). Escape closes it,
 /// Tab goes to the other panel, Up and Down move the hidden list's cursor
@@ -1083,7 +1115,11 @@ fn connect_sidebar(state: &Rc<State>) {
     });
 
     let state_weak = Rc::downgrade(state);
-    state.sidebar.connect_location_gone(move |root| {
+    // A drive unmounted with its eject button: panels in it go home, so
+    // they don't keep it busy. A network share that dropped by itself (a
+    // VPN switch, sleep): panels stay and connect it again
+    // (`Panel::connection_lost`), saying so if they can't.
+    state.sidebar.connect_location_gone(move |(root, deliberate)| {
         let Some(state) = state_weak.upgrade() else {
             return;
         };
@@ -1092,7 +1128,11 @@ fn connect_sidebar(state: &Rc<State>) {
             folder.is_some_and(|folder| folder.equal(&root) || folder.has_prefix(&root))
         };
         for panel in &state.panels {
-            if inside(panel.folder()) || inside(panel.destination()) {
+            if !deliberate && !root.is_native() {
+                if inside(panel.folder()) {
+                    panel.connection_lost();
+                }
+            } else if inside(panel.folder()) || inside(panel.destination()) {
                 panel.go_to(&home);
             }
         }
@@ -1848,6 +1888,10 @@ fn transfer_to_other_panel(state: &Rc<State>, panel: &Rc<Panel>, kind: Kind, sou
         return;
     }
     let other = &state.panels[1 - state.active.get()];
+    if let Some(server) = other.unreachable_server() {
+        state.toast(&dialogs::unreachable_target(&server));
+        return;
+    }
     // Its folder is not there yet; the one underneath is out of sight.
     if other.is_waiting() {
         if let Some(on_its_way) = other.destination() {
@@ -2346,6 +2390,8 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     panels.add(adw::ShortcutsItem::new("Type a path to go to", "<Control>l"));
     panels.add(adw::ShortcutsItem::new("Show hidden files", "<Control>h"));
     panels.add(adw::ShortcutsItem::new("Reload the folder", "<Control>r"));
+    panels.add(adw::ShortcutsItem::new("Try again when a server can’t be reached", "Return <Control>r"));
+    panels.add(adw::ShortcutsItem::new("Go back when a server can’t be reached", "Escape BackSpace"));
 
     let clipboard = adw::ShortcutsSection::new(Some("Clipboard and Menu"));
     clipboard.add(adw::ShortcutsItem::new("Cut the files", "<Control>x"));

@@ -13,6 +13,7 @@
 // is gone left out, and the drag-and-drop rules in dnd.rs.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -228,17 +229,28 @@ struct Drive {
 /// a volume (network shares among them). Mounted or not; shadowed mounts
 /// are left out. (Drives without volumes whose media can't be detected,
 /// which Nautilus lists to offer "Rescan", are left out too.)
-fn drives(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
+///
+/// Unlike Nautilus, a network share is listed once, however many
+/// connections to it there are (its computer called two ways,
+/// "pinky-one" and "pinky-one.local", makes two; see `network::share_key`),
+/// and mounts in `going` (about to be unmounted) are left out, so a share
+/// whose connection dropped doesn't show beside its new one.
+fn drives(monitor: &gio::VolumeMonitor, going: &[gio::File]) -> Vec<Drive> {
     let mut list = Vec::new();
     for drive in monitor.connected_drives() {
         list.extend(drive.volumes().iter().filter_map(volume_entry));
     }
     let loose = monitor.volumes().into_iter().filter(|volume| volume.drive().is_none());
     list.extend(loose.filter_map(|volume| volume_entry(&volume)));
-    let mounts = monitor.mounts().into_iter();
-    list.extend(
-        mounts.filter(|mount| !mount.is_shadowed() && mount.volume().is_none()).map(|m| mount_entry(&m)),
-    );
+    let mut shares = HashSet::new();
+    let mounts = monitor.mounts().into_iter().filter(|mount| {
+        let root = mount.root();
+        !mount.is_shadowed()
+            && mount.volume().is_none()
+            && !going.iter().any(|gone| gone.equal(&root))
+            && network::share_key(&root.uri()).is_none_or(|key| shares.insert(key))
+    });
+    list.extend(mounts.map(|mount| mount_entry(&mount)));
     list
 }
 
@@ -263,8 +275,16 @@ fn mount_entry(mount: &gio::Mount) -> Drive {
     } else {
         None
     };
+    // A network share by its own name ("network-share"), its computer
+    // shown after it as for favourites, rather than gvfs's
+    // "network-share on pinky-two".
+    let root = mount.root();
+    let name = (!root.is_native())
+        .then(|| root_name(&root.uri()))
+        .flatten()
+        .unwrap_or_else(|| mount.name().into());
     Drive {
-        name: mount.name().into(),
+        name,
         icon: mount.symbolic_icon(),
         target: Target::Folder(mount.default_location()),
         eject,
@@ -322,7 +342,10 @@ pub struct Sidebar {
     on_open: Callback<gio::File>,
     on_drop: RefCell<Option<Rc<DropHandler>>>,
     on_trash_drop: Callback<Vec<gio::File>>,
-    on_gone: Callback<gio::File>,
+    on_gone: Callback<(gio::File, bool)>,
+    /// The roots of mounts about to be unmounted: left out of the list, so
+    /// that a dropped share and its new connection don't show side by side.
+    going: RefCell<Vec<gio::File>>,
     /// The right-click menu on screen. It hangs on a row, so it is taken
     /// off before the rows are thrown away (GTK crashes otherwise).
     menu: RefCell<Option<gtk::PopoverMenu>>,
@@ -396,6 +419,7 @@ impl Sidebar {
             on_drop: RefCell::default(),
             on_trash_drop: RefCell::default(),
             on_gone: RefCell::default(),
+            going: RefCell::default(),
             menu: RefCell::default(),
             reordered: Cell::new(false),
         });
@@ -473,8 +497,10 @@ impl Sidebar {
         self.on_trash_drop.replace(Some(Rc::new(f)));
     }
 
-    /// Calls `f` with the root of a drive about to be unmounted or gone.
-    pub fn connect_location_gone(&self, f: impl Fn(gio::File) + 'static) {
+    /// Calls `f` with the root of a drive about to be unmounted or gone,
+    /// and whether that was asked for here (its eject button) rather than
+    /// happening to it (a network share whose connection dropped).
+    pub fn connect_location_gone(&self, f: impl Fn((gio::File, bool)) + 'static) {
         self.on_gone.replace(Some(Rc::new(f)));
     }
 
@@ -635,29 +661,39 @@ impl Sidebar {
         rebuild_on!(connect_volume_added);
         rebuild_on!(connect_volume_removed);
         rebuild_on!(connect_volume_changed);
-        rebuild_on!(connect_mount_added);
         rebuild_on!(connect_mount_changed);
         rebuild_on!(connect_drive_connected);
         rebuild_on!(connect_drive_disconnected);
         rebuild_on!(connect_drive_changed);
         let weak = Rc::downgrade(self);
+        monitor.connect_mount_added(move |_, mount| {
+            if let Some(sidebar) = weak.upgrade() {
+                sidebar.going.borrow_mut().retain(|root| !root.equal(&mount.root()));
+                sidebar.queue_rebuild();
+            }
+        });
+        let weak = Rc::downgrade(self);
         monitor.connect_mount_pre_unmount(move |_, mount| {
             if let Some(sidebar) = weak.upgrade() {
-                sidebar.location_gone(&mount.root());
+                sidebar.going.borrow_mut().push(mount.root());
+                sidebar.location_gone(&mount.root(), false);
+                sidebar.queue_rebuild();
             }
         });
         let weak = Rc::downgrade(self);
         monitor.connect_mount_removed(move |_, mount| {
             if let Some(sidebar) = weak.upgrade() {
-                sidebar.location_gone(&mount.root());
+                sidebar.going.borrow_mut().retain(|root| !root.equal(&mount.root()));
+                sidebar.location_gone(&mount.root(), false);
                 sidebar.queue_rebuild();
             }
         });
     }
 
-    fn location_gone(&self, root: &gio::File) {
+    /// `deliberate`: unmounted with the eject button here.
+    fn location_gone(&self, root: &gio::File, deliberate: bool) {
         if let Some(on_gone) = self.on_gone.borrow().clone() {
-            on_gone(root.clone());
+            on_gone((root.clone(), deliberate));
         }
     }
 
@@ -696,8 +732,11 @@ impl Sidebar {
                 SidebarRow::Favourite(index) => Some(index),
                 _ => None,
             };
-            let host = match (&target, favourite) {
-                (Target::Folder(folder), Some(_)) => bookmark_host(&folder.uri(), &name),
+            // The computer after favourites and network shares.
+            let host = match &target {
+                Target::Folder(folder) if favourite.is_some() || !folder.is_native() => {
+                    bookmark_host(&folder.uri(), &name)
+                }
                 _ => None,
             };
             let row = self.make_row(&name, host.as_deref(), &icon, tooltip.as_deref(), eject);
@@ -722,7 +761,7 @@ impl Sidebar {
             let icon = themed(bookmark_icon(&folder));
             add(SidebarRow::Favourite(index), bookmark_name(uri, label), icon, Target::Folder(folder), None);
         }
-        let drives = drives(&self.volumes);
+        let drives = drives(&self.volumes, &self.going.borrow());
         let no_drives = drives.is_empty();
         for (index, drive) in drives.into_iter().enumerate() {
             let place = if index == 0 { SidebarRow::FirstDrive } else { SidebarRow::Drive };
@@ -981,11 +1020,11 @@ impl Sidebar {
         let flags = gio::MountUnmountFlags::NONE;
         match eject {
             Eject::Unmount(mount) => {
-                self.location_gone(&mount.root());
+                self.location_gone(&mount.root(), true);
                 mount.unmount_with_operation(flags, Some(&operation), gio::Cancellable::NONE, done);
             }
             Eject::Mount(mount) => {
-                self.location_gone(&mount.root());
+                self.location_gone(&mount.root(), true);
                 mount.eject_with_operation(flags, Some(&operation), gio::Cancellable::NONE, done);
             }
             Eject::Volume(volume) => {

@@ -45,6 +45,26 @@ use crate::theme;
 /// and shows a spinner; folders read faster never show one.
 const SPINNER_AFTER: Duration = Duration::from_millis(300);
 
+/// An unreachable panel tries again of its own accord at most this often.
+const AUTO_TRY_GAP: Duration = Duration::from_secs(2);
+
+/// How long after its share was disconnected a panel connects it again
+/// (gvfs takes a moment to let go of it).
+const RECONNECT_AFTER_GONE: Duration = Duration::from_secs(1);
+
+/// Why the shown folder is read again (see `read_again`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reread {
+    /// Of its own accord (an unwatched folder after a change, a
+    /// remembered one shown again): only a dropped share is handled.
+    Quiet,
+    /// Ctrl+R: the outcome is shown.
+    Asked,
+    /// After the share was connected again: success says so; failing
+    /// again leaves the page saying it can't be reached.
+    Reconnected,
+}
+
 /// Marks the FileInfo of the ".." row (see `parent_entry`).
 const PARENT_ENTRY: &str = "kommander::parent-entry";
 
@@ -96,6 +116,27 @@ pub struct Panel {
     /// The panel is waiting for a slow folder: it shows the spinner and
     /// the folder on its way in the path strip (see `show_waiting`).
     waiting: Cell<bool>,
+    /// The list's scrolled window, greyed while the share can't be reached.
+    scrolled: gtk::ScrolledWindow,
+    /// Over the greyed list while the shown folder's share is being
+    /// connected again or can't be reached (see `show_unreachable`).
+    unreachable_page: gtk::Box,
+    unreachable_title: gtk::Label,
+    unreachable_hint: gtk::Label,
+    /// The error GIO gave, small and faint.
+    unreachable_error: gtk::Label,
+    try_again_button: gtk::Button,
+    /// The page shows: nothing may act on the files under it.
+    unreachable: Cell<bool>,
+    /// Connecting the share again is under way.
+    reconnecting: Cell<bool>,
+    /// When the last try of its own accord started (see `try_again_by_itself`).
+    last_auto_try: Cell<Option<Instant>>,
+    /// The folder shown before the panel went onto the share it is on (or
+    /// into a local folder): where Back on that page leads.
+    before_share: RefCell<Option<gio::File>>,
+    /// Kept so that its "mount-added" keeps coming (see `connect_signals`).
+    volumes: gio::VolumeMonitor,
     /// Called whenever the panel has gone to another folder.
     folder_changed: RefCell<Vec<Rc<dyn Fn()>>>,
     hidden_filter: gtk::CustomFilter,
@@ -242,6 +283,57 @@ impl Panel {
         let list_area = gtk::Overlay::builder().child(&scrolled).vexpand(true).build();
         list_area.add_overlay(&empty_hint);
 
+        // Over the greyed list when the share can't be reached, as GNOME
+        // Files puts an error page in its view: what happened, Try Again
+        // and Back. Its buttons take no focus; Enter and Backspace work
+        // through window.rs (`unreachable_key`).
+        let unreachable_icon = gtk::Image::builder()
+            .icon_name("network-offline-symbolic")
+            .pixel_size(48)
+            .css_classes(["dimmed"])
+            .build();
+        let wrapped = |classes: &[&str]| {
+            gtk::Label::builder()
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .max_width_chars(44)
+                .css_classes(classes)
+                .build()
+        };
+        let unreachable_title = wrapped(&["title-3"]);
+        let unreachable_hint = wrapped(&["dimmed"]);
+        unreachable_hint.set_label(dialogs::UNREACHABLE_HINT);
+        let unreachable_error = wrapped(&["dimmed", "caption"]);
+        let try_again_button = gtk::Button::builder()
+            .label(dialogs::TRY_AGAIN)
+            .use_underline(true)
+            .focusable(false)
+            .css_classes(["pill", "suggested-action"])
+            .build();
+        let back_button = gtk::Button::builder()
+            .label(dialogs::BACK)
+            .use_underline(true)
+            .focusable(false)
+            .css_classes(["pill"])
+            .build();
+        let unreachable_buttons = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).build();
+        unreachable_buttons.append(&try_again_button);
+        unreachable_buttons.append(&back_button);
+        let unreachable_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .css_classes(["unreachable-page"])
+            .build();
+        unreachable_page.append(&unreachable_icon);
+        unreachable_page.append(&unreachable_title);
+        unreachable_page.append(&unreachable_hint);
+        unreachable_page.append(&unreachable_buttons);
+        unreachable_page.append(&unreachable_error);
+        list_area.add_overlay(&unreachable_page);
+
         // In the list's place while a slow folder is read: a spinner, as in
         // GNOME Files, and how to give up.
         let spinner = adw::Spinner::builder().width_request(32).height_request(32).build();
@@ -351,6 +443,17 @@ impl Panel {
             trip: Cell::new(0),
             refresh: RefCell::default(),
             waiting: Cell::new(false),
+            scrolled,
+            unreachable_page,
+            unreachable_title,
+            unreachable_hint,
+            unreachable_error,
+            try_again_button: try_again_button.clone(),
+            unreachable: Cell::new(false),
+            reconnecting: Cell::new(false),
+            last_auto_try: Cell::new(None),
+            before_share: RefCell::default(),
+            volumes: gio::VolumeMonitor::get(),
             folder_changed: RefCell::default(),
             hidden_filter,
             show_hidden,
@@ -365,6 +468,7 @@ impl Panel {
             on_drop: RefCell::default(),
         });
         panel.connect_signals();
+        panel.connect_unreachable(&try_again_button, &back_button);
         panel.open(folder, None);
         panel
     }
@@ -668,11 +772,12 @@ impl Panel {
     }
 
     /// "14 items · 10.3 MB", or "3 marked · 1.2 MB" while files are marked;
-    /// nothing while waiting for a slow folder (the spinner says it all).
+    /// nothing while waiting for a slow folder (the spinner says it all)
+    /// or while the share can't be reached.
     fn update_status(&self) {
         self.update_network_parts();
         self.update_cursor_name();
-        if self.waiting.get() {
+        if self.out_of_reach() {
             self.status_label.set_label("");
             return;
         }
@@ -1121,10 +1226,22 @@ impl Panel {
         self.loading_progress.set_label("");
     }
 
-    /// Whether the panel is waiting for a slow folder (the spinner shows).
-    /// Then nothing may act on its files: they are out of sight.
+    /// Whether the panel is waiting for a slow folder (the spinner shows),
+    /// or its share can't be reached (the list is greyed, see
+    /// `show_unreachable`). Then nothing may act on its files.
     pub fn is_waiting(&self) -> bool {
-        self.waiting.get()
+        self.out_of_reach()
+    }
+
+    fn out_of_reach(&self) -> bool {
+        self.waiting.get() || self.unreachable.get()
+    }
+
+    /// Whether the page saying the share can't be reached is what shows
+    /// (not the spinner of a trip away from it); its keys are window.rs's
+    /// `unreachable_key`.
+    pub fn is_unreachable(&self) -> bool {
+        self.unreachable.get() && !self.waiting.get()
     }
 
     /// Escape or Backspace while waiting: gives up the folder on its way
@@ -1150,11 +1267,19 @@ impl Panel {
     /// The panel is now in `listing`'s folder: everything that belongs to
     /// being in a folder changes here, in one go, so the list never shows
     /// an empty or half-read folder.
-    fn commit(&self, listing: &Rc<Listing>, cursor_on: Option<PathBuf>, started: Option<Instant>) {
+    fn commit(self: &Rc<Self>, listing: &Rc<Listing>, cursor_on: Option<PathBuf>, started: Option<Instant>) {
         let folder = listing.folder();
         // First, so that the list can take the keyboard focus below.
         self.stop_waiting();
+        self.clear_unreachable();
         self.close_search();
+        // Onto another share (or off one): where Back leads if this one
+        // can't be reached.
+        if let Some(old) = self.shown().map(|shown| shown.folder())
+            && network::share_key(&old.uri()) != network::share_key(&folder.uri())
+        {
+            self.before_share.replace(Some(old));
+        }
         self.pending_cursor.replace(None);
         self.marked.marks.borrow_mut().clear();
         self.marked.show_all();
@@ -1171,6 +1296,13 @@ impl Panel {
         self.path_bar.set_location(&folder);
         self.update_status();
         match listing.error() {
+            // The share dropped since it was last seen: connected again
+            // (the panel says so meanwhile), instead of an empty folder
+            // and an error.
+            Some(error) if network::lost_connection(&error) && !folder.is_native() => {
+                self.listings.forget(&folder);
+                self.reconnect(true);
+            }
             Some(error) => {
                 let name = folder.basename().map_or_else(
                     || folder.parse_name().to_string(),
@@ -1232,20 +1364,21 @@ impl Panel {
             });
             return;
         }
-        self.read_again(&folder, trip, false);
+        self.read_again(&folder, trip, Reread::Quiet);
     }
 
     /// After something was created, renamed, moved or deleted: where the
     /// shown folder is not watched (a network share tells nobody about
     /// changes), it is read again in the background and swapped in when
     /// ready, so the change shows without leaving the folder. Watched
-    /// folders show changes by themselves. Not while on the way elsewhere.
+    /// folders show changes by themselves. Not while on the way elsewhere,
+    /// nor while the share can't be reached.
     pub fn reread_if_unwatched(self: &Rc<Self>) {
-        if self.pending.borrow().is_some() {
+        if self.pending.borrow().is_some() || self.unreachable.get() {
             return;
         }
         if let Some(listing) = self.shown().filter(|listing| !listing.is_watched()) {
-            self.read_again(&listing.folder(), self.trip.get(), false);
+            self.read_again(&listing.folder(), self.trip.get(), Reread::Quiet);
         }
     }
 
@@ -1253,22 +1386,23 @@ impl Panel {
     /// swaps it in when ready, cursor and marks staying where they are.
     /// For what others changed on a network share, which tells nobody.
     /// Once read, a pill in the path strip says what changed (or the
-    /// error is reported), so a slow share shows when it is done.
-    /// Not while on the way elsewhere.
+    /// error is reported), so a slow share shows when it is done. A share
+    /// that dropped is connected again first. Not while on the way elsewhere.
     pub fn reload(self: &Rc<Self>) {
         if self.pending.borrow().is_some() {
             return;
         }
-        if let Some(listing) = self.shown() {
-            self.read_again(&listing.folder(), self.trip.get(), true);
+        if self.unreachable.get() {
+            self.try_again();
+        } else if let Some(listing) = self.shown() {
+            self.read_again(&listing.folder(), self.trip.get(), Reread::Asked);
         }
     }
 
     /// Reads the shown `folder` afresh in the background; `refreshed` swaps
     /// it in, unless the panel has moved on from `trip` by then. A read
-    /// already under way is replaced. `announce`: asked for with Ctrl+R,
-    /// so the outcome is shown.
-    fn read_again(self: &Rc<Self>, folder: &gio::File, trip: u64, announce: bool) {
+    /// already under way is replaced.
+    fn read_again(self: &Rc<Self>, folder: &gio::File, trip: u64, why: Reread) {
         let fresh = Listing::new(folder);
         let weak = Rc::downgrade(self);
         let started = timing().then(Instant::now);
@@ -1278,7 +1412,7 @@ impl Panel {
                 && panel.trip.get() == trip
                 && let Some(refresh) = panel.refresh.take()
             {
-                panel.refreshed(&refresh.listing, started, announce);
+                panel.refreshed(&refresh.listing, started, why);
             }
         });
         self.refresh.replace(Some(Waiting { listing: fresh, handler: Some(handler) }));
@@ -1286,9 +1420,10 @@ impl Panel {
 
     /// The fresh read of the shown folder is complete: it replaces the
     /// shown listing, the cursor staying on the same file and marked files
-    /// staying marked. A read that failed changes nothing (and says so if
-    /// `announce`d).
-    fn refreshed(&self, fresh: &Rc<Listing>, started: Option<Instant>, announce: bool) {
+    /// staying marked. A read that failed changes nothing (and says so
+    /// unless `Reread::Quiet`); one that failed because the share dropped
+    /// connects it again first (`reconnect`), once.
+    fn refreshed(self: &Rc<Self>, fresh: &Rc<Listing>, started: Option<Instant>, why: Reread) {
         if let Some(started) = started {
             eprintln!(
                 "kommander timing: {} ({} entries) read again after {:.1} ms",
@@ -1298,8 +1433,19 @@ impl Panel {
             );
         }
         if let Some(error) = fresh.error() {
-            if announce {
-                let folder = fresh.folder();
+            let folder = fresh.folder();
+            let lost = network::lost_connection(&error) && !folder.is_native();
+            if lost && why != Reread::Reconnected {
+                self.reconnect(why == Reread::Asked);
+                return;
+            }
+            if lost {
+                // Connected, yet gone again at once.
+                self.show_unreachable(Some(&error));
+                return;
+            }
+            self.clear_unreachable();
+            if why != Reread::Quiet {
                 let name = folder.basename().map_or_else(
                     || folder.parse_name().to_string(),
                     |name| name.to_string_lossy().into_owned(),
@@ -1312,11 +1458,21 @@ impl Panel {
             }
             return;
         }
-        if announce && let Some(old) = self.shown() {
+        self.clear_unreachable();
+        if why != Reread::Quiet && let Some(old) = self.shown() {
             let filter = self.hidden_filter.clone();
             let (new, gone, changed) =
                 compare_listings(old.model().upcast_ref(), fresh.model().upcast_ref(), |info| filter.match_(info));
-            self.path_bar.flash(&dialogs::reloaded(new, gone, changed));
+            let folder = fresh.folder();
+            let server = (!folder.is_native()).then(|| network::server_name(&folder.uri())).flatten();
+            let reconnected = why == Reread::Reconnected;
+            // Came here while the share was gone: nothing to compare with.
+            let text = if old.error().is_some() {
+                dialogs::reconnected(server.as_deref())
+            } else {
+                dialogs::reloaded(server.as_deref(), reconnected, new, gone, changed)
+            };
+            self.path_bar.flash(&text);
         }
         // The cursor stays on its file, or goes to the one it is waiting
         // for (a folder just created, see `put_cursor_on`) if that is here.
@@ -1337,6 +1493,208 @@ impl Panel {
             select_row(&self.column_view, position, focus);
         }
         self.update_status();
+    }
+
+    // --- A share that dropped (a VPN switch, sleep) ---
+    //
+    // gvfs lets go of a share whose connection dropped; reading it then
+    // fails with "not mounted". The panel connects it again by itself and
+    // reads the folder afresh; meanwhile the list is greyed under
+    // "Connecting to …". If that fails, the page over the greyed list says
+    // the computer can't be reached, with Try Again and Back, as GNOME Files
+    // puts an error page in its view rather than leaving a list whose every
+    // action would fail. It tries again by itself when the network changes
+    // (the VPN back) or the share is connected elsewhere.
+
+    /// Connects the shown folder's share again and reads the folder afresh
+    /// (`Reread::Reconnected`); see above. `asked`: by Try Again, Ctrl+R or
+    /// going into the folder, rather than of its own accord; only then a
+    /// failure is written to the log.
+    fn reconnect(self: &Rc<Self>, asked: bool) {
+        let Some(folder) = self.shown().map(|shown| shown.folder()) else {
+            return;
+        };
+        if self.reconnecting.replace(true) {
+            return;
+        }
+        self.show_unreachable_page(&dialogs::reconnecting_title(&self.server_label()), None, true);
+        let trip = self.trip.get();
+        let weak = Rc::downgrade(self);
+        let parent = self.root.root().and_downcast::<gtk::Window>();
+        glib::spawn_future_local(async move {
+            let result = network::reconnect_folder(&folder, parent.as_ref()).await;
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            panel.reconnecting.set(false);
+            // Gone elsewhere meanwhile (that cleared the page).
+            if panel.trip.get() != trip {
+                return;
+            }
+            match result {
+                Ok(()) => {
+                    panel.listings.forget(&folder);
+                    panel.read_again(&folder, trip, Reread::Reconnected);
+                }
+                // The password question was cancelled: nothing to report.
+                Err(error) if error.matches(gio::IOErrorEnum::FailedHandled) => panel.show_unreachable(None),
+                Err(error) => {
+                    if asked {
+                        let summary = dialogs::unreachable_title(&panel.server_label());
+                        report::record(
+                            &Problem::new(&summary, dialogs::attempt::RECONNECT)
+                                .file(label::FOLDER, &folder)
+                                .error(&error),
+                        );
+                    }
+                    panel.show_unreachable(Some(&error));
+                }
+            }
+        });
+    }
+
+    /// The page over the greyed list: the share can't be reached, with
+    /// GIO's `error` in small print.
+    fn show_unreachable(&self, error: Option<&glib::Error>) {
+        let reason = error.map(dialogs::reason);
+        self.show_unreachable_page(&dialogs::unreachable_title(&self.server_label()), reason.as_deref(), false);
+    }
+
+    /// Greys the list and shows the page over it with `title`; `connecting`:
+    /// while that is tried (no hint, Try Again waits).
+    fn show_unreachable_page(&self, title: &str, reason: Option<&str>, connecting: bool) {
+        if !self.unreachable.replace(true) {
+            self.close_search();
+            self.set_drop_highlight(None);
+            self.scrolled.add_css_class("unreachable-list");
+            self.scrolled.set_can_target(false);
+            self.unreachable_page.set_visible(true);
+        }
+        self.unreachable_title.set_label(title);
+        self.unreachable_hint.set_visible(!connecting);
+        self.unreachable_error.set_label(reason.unwrap_or_default());
+        self.unreachable_error.set_visible(reason.is_some() && !connecting);
+        self.try_again_button.set_sensitive(!connecting);
+        self.update_status();
+    }
+
+    /// The list is in reach again.
+    fn clear_unreachable(&self) {
+        if self.unreachable.replace(false) {
+            self.unreachable_page.set_visible(false);
+            self.scrolled.remove_css_class("unreachable-list");
+            self.scrolled.set_can_target(true);
+            self.update_status();
+        }
+    }
+
+    /// The computer the shown folder is on ("pinky-two"), or the folder's
+    /// name where the address names none.
+    fn server_label(&self) -> String {
+        let Some(folder) = self.folder() else {
+            return String::new();
+        };
+        network::server_name(&folder.uri()).unwrap_or_else(|| {
+            folder.basename().map_or_else(
+                || folder.parse_name().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+    }
+
+    /// For the toast when files are to go into this panel while its share
+    /// can't be reached: the computer's name.
+    pub fn unreachable_server(&self) -> Option<String> {
+        self.unreachable.get().then(|| self.server_label())
+    }
+
+    /// Try Again (Enter, Ctrl+R, the button).
+    pub fn try_again(self: &Rc<Self>) {
+        if self.unreachable.get() {
+            self.reconnect(true);
+        }
+    }
+
+    /// The network changed or a share was connected: an unreachable panel
+    /// tries again of its own accord, at most every `AUTO_TRY_GAP`
+    /// (the network can change several times in a row).
+    fn try_again_by_itself(self: &Rc<Self>) {
+        if !self.unreachable.get() || self.reconnecting.get() {
+            return;
+        }
+        if self.last_auto_try.get().is_some_and(|last| last.elapsed() < AUTO_TRY_GAP) {
+            return;
+        }
+        self.last_auto_try.set(Some(Instant::now()));
+        self.reconnect(false);
+    }
+
+    /// The share the shown folder is on was disconnected, though not with
+    /// its eject button (a VPN switch, sleep, gvfs letting go): the panel
+    /// stays and connects it again after a moment, instead of going home.
+    pub fn connection_lost(self: &Rc<Self>) {
+        if self.pending.borrow().is_some() {
+            return;
+        }
+        let trip = self.trip.get();
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(RECONNECT_AFTER_GONE, move || {
+            if let Some(panel) = weak.upgrade()
+                && panel.trip.get() == trip
+                && !panel.reconnecting.get()
+            {
+                panel.reconnect(false);
+            }
+        });
+    }
+
+    /// Back (Backspace, Escape, the button) while the share can't be
+    /// reached: to the folder shown before the panel went onto this share,
+    /// or home.
+    pub fn leave_unreachable(self: &Rc<Self>) {
+        let here = self.folder().and_then(|folder| network::share_key(&folder.uri()));
+        let back = self
+            .before_share
+            .borrow()
+            .clone()
+            .filter(|before| network::share_key(&before.uri()) != here);
+        let to = back.unwrap_or_else(|| gio::File::for_path(glib::home_dir()));
+        self.open(&to, None);
+    }
+
+    /// The page's buttons, and its tries of its own accord.
+    fn connect_unreachable(self: &Rc<Self>, try_again: &gtk::Button, back: &gtk::Button) {
+        let weak = Rc::downgrade(self);
+        try_again.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.try_again();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        back.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.leave_unreachable();
+            }
+        });
+        // Fires when the VPN comes up, the Wi-Fi changes and the like.
+        let weak = Rc::downgrade(self);
+        gio::NetworkMonitor::default().connect_network_changed(move |_, _| {
+            if let Some(panel) = weak.upgrade() {
+                panel.try_again_by_itself();
+            }
+        });
+        // The same share connected elsewhere (the sidebar, GNOME Files).
+        let weak = Rc::downgrade(self);
+        self.volumes.connect_mount_added(move |_, mount| {
+            if let Some(panel) = weak.upgrade()
+                && let Some(folder) = panel.folder()
+                && network::share_key(&mount.root().uri()).is_some_and(|key| {
+                    network::share_key(&folder.uri()).as_deref() == Some(key.as_str())
+                })
+            {
+                panel.try_again_by_itself();
+            }
+        });
     }
 
     /// Starts looking up the real types of `listing`'s files that their
@@ -1798,8 +2156,8 @@ impl Panel {
 
     /// A drag is about to start at `x`, `y`: what it carries, if anything.
     fn prepare_drag(&self, x: f64, y: f64) -> Option<gdk::ContentProvider> {
-        // The list is out of sight while waiting.
-        if self.waiting.get() {
+        // The list is out of sight while waiting, greyed while unreachable.
+        if self.out_of_reach() {
             return None;
         }
         let (position, _) = self.row_at(x, y)?;
@@ -1831,7 +2189,8 @@ impl Panel {
     }
 
     /// Whether the panel takes a drag that comes in: files only, and not
-    /// while a dialog is open or the panel waits for a slow folder.
+    /// while a dialog is open, the panel waits for a slow folder or its
+    /// share can't be reached.
     fn accept_drop(&self, drop: &gdk::Drop) -> bool {
         let dialog_open = self
             .root
@@ -1839,7 +2198,7 @@ impl Panel {
             .and_downcast::<adw::ApplicationWindow>()
             .is_some_and(|window| window.visible_dialog().is_some());
         !dialog_open
-            && !self.waiting.get()
+            && !self.out_of_reach()
             && self.folder().is_some()
             && drop.formats().contains_type(gdk::FileList::static_type())
     }

@@ -130,6 +130,21 @@ paned.panels-split > separator {
   margin: 24px;
 }
 
+/* A share that can't be reached: the list greyed out underneath, and over
+   it the page with Try Again and Back on a card of the window's colour. */
+.panel .unreachable-list {
+  opacity: 0.35;
+  filter: grayscale(1) blur(1px);
+}
+
+.panel .unreachable-page {
+  margin: 24px;
+  padding: 24px 32px;
+  border-radius: 12px;
+  background-color: color-mix(in srgb, var(--window-bg-color) 92%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--shade-color) 100%, transparent);
+}
+
 /* The hint in the empty Network list. */
 .panel .network-hint {
   margin: 24px;

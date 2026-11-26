@@ -484,18 +484,56 @@ pub const NOTHING_TO_PASTE: &str = "There is nothing on the clipboard to paste";
 pub const COPIED: &str = "Copied";
 
 /// The pill that flashes after Ctrl+R: what reading the folder again
-/// changed among the rows shown ("Reloaded · 2 new, 1 gone").
-pub fn reloaded(new: usize, gone: usize, changed: usize) -> String {
+/// changed among the rows shown ("Reloaded · 2 new, 1 gone"). On a
+/// network share it names the computer that was asked ("Reloaded from
+/// pinky-two · no changes"), so it is plain that the answer is fresh; after
+/// the share had to be connected again, "Reconnected to pinky-two · …".
+pub fn reloaded(server: Option<&str>, reconnected: bool, new: usize, gone: usize, changed: usize) -> String {
     let parts: Vec<String> = [(new, "new"), (gone, "gone"), (changed, "changed")]
         .into_iter()
         .filter(|(count, _)| *count > 0)
         .map(|(count, word)| format!("{count} {word}"))
         .collect();
-    if parts.is_empty() {
-        "Reloaded · no changes".into()
-    } else {
-        format!("Reloaded · {}", parts.join(", "))
-    }
+    let what = match (reconnected, server) {
+        (true, Some(server)) => format!("Reconnected to {server}"),
+        (true, None) => "Reconnected".into(),
+        (false, Some(server)) => format!("Reloaded from {server}"),
+        (false, None) => "Reloaded".into(),
+    };
+    let changes = if parts.is_empty() { "no changes".into() } else { parts.join(", ") };
+    format!("{what} · {changes}")
+}
+
+/// The pill when a share that dropped on the way into one of its folders
+/// was connected again (there is no earlier list to compare with).
+pub fn reconnected(server: Option<&str>) -> String {
+    server.map_or_else(|| "Reconnected".into(), |server| format!("Reconnected to {server}"))
+}
+
+/// Over the greyed list when a panel's share can't be reached: the
+/// computer it is on ("pinky-two"), or the folder's name where there is no
+/// computer.
+pub fn unreachable_title(server: &str) -> String {
+    format!("“{server}” can’t be reached")
+}
+
+/// Under that title: what probably happened and what Kommander does about it.
+pub const UNREACHABLE_HINT: &str =
+    "The connection dropped — perhaps the VPN is off. Kommander tries again by itself when the network changes.";
+
+/// The title while the share is being connected again.
+pub fn reconnecting_title(server: &str) -> String {
+    format!("Connecting to “{server}”…")
+}
+
+/// The buttons on that page (Enter, and Backspace or Escape).
+pub const TRY_AGAIN: &str = "_Try Again";
+pub const BACK: &str = "_Back";
+
+/// The plain toast when files are to be copied or moved into a panel whose
+/// share can't be reached.
+pub fn unreachable_target(server: &str) -> String {
+    format!("“{server}” can’t be reached right now")
 }
 
 /// The toast when Ctrl+R could not read the folder again.
@@ -653,6 +691,7 @@ pub mod attempt {
 
     pub const OPEN_FOLDER: &str = "Open a folder in a panel";
     pub const RELOAD: &str = "Read the shown folder again (Ctrl+R)";
+    pub const RECONNECT: &str = "Connect a share again after the connection dropped";
     pub const OPEN_ARGUMENT: &str = "Open a folder or file given to Kommander on start";
     pub const OPEN_DEFAULT: &str = "Open a file with the default app for its kind";
     pub const EDIT: &str = "Open a file in the text editor (F4)";
@@ -1076,10 +1115,15 @@ mod tests {
 
     #[test]
     fn the_reload_pill_says_what_changed() {
-        assert_eq!(reloaded(0, 0, 0), "Reloaded · no changes");
-        assert_eq!(reloaded(2, 0, 0), "Reloaded · 2 new");
-        assert_eq!(reloaded(2, 1, 0), "Reloaded · 2 new, 1 gone");
-        assert_eq!(reloaded(0, 1, 3), "Reloaded · 1 gone, 3 changed");
+        assert_eq!(reloaded(None, false, 0, 0, 0), "Reloaded · no changes");
+        assert_eq!(reloaded(None, false, 2, 0, 0), "Reloaded · 2 new");
+        assert_eq!(reloaded(None, false, 2, 1, 0), "Reloaded · 2 new, 1 gone");
+        assert_eq!(reloaded(None, false, 0, 1, 3), "Reloaded · 1 gone, 3 changed");
+        assert_eq!(reloaded(Some("pinky-two"), false, 0, 0, 0), "Reloaded from pinky-two · no changes");
+        assert_eq!(reloaded(Some("pinky-two"), true, 1, 0, 0), "Reconnected to pinky-two · 1 new");
+        assert_eq!(reloaded(None, true, 0, 0, 0), "Reconnected · no changes");
+        assert_eq!(reconnected(Some("pinky-two")), "Reconnected to pinky-two");
+        assert_eq!(reconnected(None), "Reconnected");
         assert_eq!(could_not_reload("Videos", "The share is gone"), "Could not read “Videos” again: The share is gone");
     }
 
@@ -1386,6 +1430,11 @@ mod tests {
         assert_eq!(LOADING, "Loading…");
         assert_eq!(ESC_TO_GO_BACK, "Esc to go back");
         assert_eq!(still_loading("Projects"), "“Projects” is still loading");
+        assert_eq!(unreachable_title("pinky-two"), "“pinky-two” can’t be reached");
+        assert_eq!(reconnecting_title("pinky-two"), "Connecting to “pinky-two”…");
+        assert_eq!(unreachable_target("pinky-two"), "“pinky-two” can’t be reached right now");
+        assert!(UNREACHABLE_HINT.contains("tries again by itself"));
+        assert_eq!((TRY_AGAIN, BACK), ("_Try Again", "_Back"));
 
         assert_eq!(loading_progress(0, 0), "");
         assert_eq!(loading_progress(2, 0), "");
