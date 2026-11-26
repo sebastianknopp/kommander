@@ -490,11 +490,19 @@ window.main-window.translucent .panel.active .path-strip {
   --strip-bg-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
 }
 
-/* With no solid strip colour, a long path's start is simply cut off
- * instead of fading out. */
-window.main-window.translucent .path-strip scrolledwindow undershoot.left,
+/* With no solid strip colour, a long path's cut-off end fades into what is
+ * drawn there instead: the panels' see-through background, with the active
+ * strip's tint on top. */
+window.main-window.translucent .path-strip scrolledwindow undershoot.left {
+  background:
+    linear-gradient(to right, var(--strip-bg-color) 4px, transparent 32px),
+    linear-gradient(to right, color-mix(in srgb, var(--view-bg-color) var(--translucent-alpha), transparent) 4px, transparent 32px);
+}
+
 window.main-window.translucent .path-strip scrolledwindow undershoot.right {
-  background: none;
+  background:
+    linear-gradient(to left, var(--strip-bg-color) 4px, transparent 32px),
+    linear-gradient(to left, color-mix(in srgb, var(--view-bg-color) var(--translucent-alpha), transparent) 4px, transparent 32px);
 }
 
 window.main-window.translucent .preview .preview-text > text {

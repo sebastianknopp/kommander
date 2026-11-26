@@ -35,7 +35,7 @@ you switch it, and otherwise stays out of your way.
 - **Drag and drop** between the panels and with other apps
 - **Type a path** (Ctrl+L) with Tab completion, or type a name to jump to it
 - **Copy a path** with Ctrl+Shift+C or a double-click on the path strip
-- **Slow folders** show a spinner and the time waited; Escape goes back
+- **Slow or dropped shares**: a spinner while waiting, reconnects by itself, Escape goes back
 - **Three looks**: GNOME, Omarchy's own square style, or Norton Commander blue
 - **Omarchy theme** followed live, light and dark, and an optional see-through window
 

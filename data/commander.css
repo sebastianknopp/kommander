@@ -75,9 +75,33 @@ window.commander-look .panel.active .path-strip {
   color: var(--nc-text);
 }
 
-window.commander-look .path-strip scrolledwindow undershoot.left,
+/* A long path's cut-off end fades into the path block's own colour (the
+ * block fills the strip whenever the path is cut): plain, or cyan in the
+ * active panel unless the favourites have the keys. */
+window.commander-look .path-strip scrolledwindow undershoot.left {
+  background: linear-gradient(to right, var(--nc-panel) 4px, transparent 32px);
+}
+
 window.commander-look .path-strip scrolledwindow undershoot.right {
-  background: none;
+  background: linear-gradient(to left, var(--nc-panel) 4px, transparent 32px);
+}
+
+window.commander-look .panel.active .path-strip scrolledwindow undershoot.left {
+  background: linear-gradient(to right, var(--nc-cursor) 4px, transparent 32px);
+}
+
+window.commander-look .panel.active .path-strip scrolledwindow undershoot.right {
+  background: linear-gradient(to left, var(--nc-cursor) 4px, transparent 32px);
+}
+
+window.commander-look .favourites-bar.keyboard ~ .panels .panel.active .path-strip scrolledwindow undershoot.left,
+window.commander-look .favourites-bar.keyboard ~ * .panels .panel.active .path-strip scrolledwindow undershoot.left {
+  background: linear-gradient(to right, var(--nc-panel) 4px, transparent 32px);
+}
+
+window.commander-look .favourites-bar.keyboard ~ .panels .panel.active .path-strip scrolledwindow undershoot.right,
+window.commander-look .favourites-bar.keyboard ~ * .panels .panel.active .path-strip scrolledwindow undershoot.right {
+  background: linear-gradient(to left, var(--nc-panel) 4px, transparent 32px);
 }
 
 /* The path: one block, plain in the inactive panel, inverse (cyan, dark
